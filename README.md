@@ -40,6 +40,26 @@ YouTube Music Desktop integration provides realtime playback tracking, automatic
 
 > Aetheris requires your own API credentials for certain integrations.
 
+### ⚠️ Windows SmartScreen Notice
+
+Aetheris is currently distributed without a paid Windows code-signing certificate. Because of this, Windows SmartScreen may display a **"Windows protected your PC"** warning when you run the installer.
+
+This warning does **not automatically mean Aetheris is malicious**. SmartScreen commonly warns about unsigned applications or applications that have not yet built enough reputation with Microsoft.
+
+If you downloaded Aetheris from the official GitHub release, you can continue by:
+
+1. Click **More info** on the SmartScreen warning.
+2. Verify that the app shown is **Aetheris**.
+3. Click **Run anyway**.
+
+### 🔐 Verify Before Installing
+
+For additional transparency, official Aetheris releases include **VirusTotal verification and SHA-256 hashes** for the Windows installer and installed application.
+
+Check the release notes for the version you're downloading to find its VirusTotal reports and SHA-256 hashes. You can use these to verify that your downloaded installer matches the file checked before release.
+
+**Only download Aetheris from the official Aetheris GitHub repository/releases.**
+
 ---
 
 ## Setup
