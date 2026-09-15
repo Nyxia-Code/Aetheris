@@ -1,4 +1,4 @@
-# Aetheris Website v1.0.3
+# Aetheris Website v1.0.4
 
 Public, account-free website for aetherisbot.club.
 
