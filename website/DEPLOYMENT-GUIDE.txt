@@ -1,0 +1,28 @@
+AETHERIS WEBSITE v1.0 — CLOUDFLARE PAGES DEPLOYMENT
+
+Goal
+- aetherisbot.club = public static Aetheris website
+- api.aetherisbot.club = existing AetherisBot backend (leave this alone)
+
+Recommended deployment: Cloudflare Pages.
+
+1. Extract this ZIP.
+2. Keep index.html, all other HTML pages, assets/, _headers, robots.txt, sitemap.xml and 404.html together.
+3. In Cloudflare, open Workers & Pages and create a Pages project.
+4. Deploy the website folder as a static site. There is no build command required; index.html is already the entry page.
+5. After the Pages deployment succeeds, open the Pages project's Custom domains section.
+6. Add: aetherisbot.club
+7. Follow Cloudflare's prompt to attach the apex domain to the Pages project.
+8. DO NOT delete or replace the existing api.aetherisbot.club DNS/Tunnel hostname. The website and API are intentionally separate.
+9. Visit https://aetherisbot.club and test Home, Download, Setup, Docs, Changelog, Status, FAQ, Support and Roadmap.
+10. Test the site on desktop and phone.
+11. The Status page is prepared to check the public AetherisBot service. The included server-patch folder documents the small CORS change needed for that browser check if it has not already been applied.
+
+Updating the website later
+- Build the next static website version.
+- Deploy the new static files to the SAME Cloudflare Pages project.
+- Do not touch the api.aetherisbot.club Tunnel just to update the website.
+
+Important
+- The homepage Aetheris player is an animated fictional demo. It does not display a user's real song, Twitch identity, or desktop connection state.
+- The FAQ intentionally remains Coming Soon for v1.0.

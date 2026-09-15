@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#090b10">
+  <meta name="description" content="Aetheris is a Windows Twitch song-request manager for Spotify and YouTube Music Desktop with AetherisBot Cloud and OBS overlays.">
+  <title>Aetheris</title>
+  <link rel="stylesheet" href="assets/styles.css">
+  <link rel="icon" type="image/png" href="assets/aetheris-icon.png">
+<link rel="canonical" href="https://aetherisbot.club/"></head>
+<body>
+  <div class="noise"></div>
+  <header class="nav wrap">
+    <a class="brand" href="#top" aria-label="Aetheris home"><img class="brand-icon" src="assets/aetheris-icon.png" alt=""><span>Aetheris</span></a>
+    <nav>
+      <a href="#features">Features</a><a href="docs.html">Docs</a><a href="changelog.html">Changelog</a><a href="status.html">Status</a><a href="faq.html">FAQ <span class="soon">Coming Soon</span></a>
+    </nav>
+    <a class="button small ghost" href="download.html">Get Aetheris</a>
+  </header>
+
+  <main id="top">
+    <section class="hero wrap">
+      <div class="eyebrow"><span class="dot"></span> Aetheris v1.4.0</div>
+      <h1>Song requests.<br><span>Without the mess.</span></h1>
+      <p class="lead">Aetheris connects Twitch chat to Spotify and YouTube Music Desktop with queue handling, cloud-connected bot messaging, OBS overlays, and streamer-first controls.</p>
+      <div class="actions"><a class="button" href="download.html">Download Aetheris</a><a class="button ghost" href="#features">Explore features</a></div>
+      <div class="hero-card glass">
+        <div class="windowbar"><i></i><i></i><i></i><b>AETHERIS</b><em>CONNECTED</em></div>
+        <div class="player">
+          <div class="cover" id="demo-cover"><img class="demo-cover-icon" id="demo-cover-icon" src="assets/spotify.svg" alt=""></div>
+          <div class="track demo-song-change" id="demo-track-copy"><small>NOW PLAYING <span class="demo-eq" aria-hidden="true"><i></i><i></i><i></i><i></i></span></small><strong><span id="demo-title">Midnight Drive</span></strong><span><span id="demo-sub">Neon Skyline • Requested by @nightowl</span></span><div class="progress"><i id="demo-progress"></i></div><div class="times"><span id="demo-current">0:00</span><span id="demo-duration">3:42</span></div></div>
+        </div>
+        <div class="stats">
+          <div><small>TWITCH</small><strong class="service-label"><img class="service-icon" src="assets/twitch.svg" alt="">Connected</strong></div>
+          <div><small>PLAYER</small><strong class="service-label"><img class="service-icon" id="demo-source-icon" src="assets/spotify.svg" alt=""><span id="demo-source">Spotify</span></strong></div>
+          <div><small>BOT</small><strong class="service-label"><img class="service-icon" src="assets/aetherisbot.svg" alt="">AetherisBot</strong></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="strip"><div class="wrap strip-inner"><span class="service-label"><img class="service-icon" src="assets/twitch.svg" alt="">TWITCH</span><i></i><span class="service-label"><img class="service-icon" src="assets/spotify.svg" alt="">SPOTIFY</span><i></i><span class="service-label"><img class="service-icon" src="assets/youtube-music.svg" alt="">YOUTUBE MUSIC DESKTOP</span><i></i><span class="service-label"><img class="service-icon" src="assets/obs.svg" alt="">OBS</span></div></section>
+
+    <section id="features" class="section wrap">
+      <div class="section-head"><p>BUILT FOR STREAMERS</p><h2>Everything your song requests need.</h2><span>No viewer accounts. No bloated dashboard. Aetheris stays focused on the stream.</span></div>
+      <div class="grid">
+        <article class="card"><h3>Twitch requests</h3><p>Accept song requests from chat with configurable commands, cooldowns, automatic handling, and clear bot responses.</p></article>
+        <article class="card"><h3>Spotify + YTMD</h3><p>Control Spotify or YouTube Music Desktop while keeping playback on the streamer's own machine.</p></article>
+        <article class="card"><h3>OBS overlays</h3><p>Show current track information, requester details, progress, artwork, and polished now-playing visuals in OBS.</p></article>
+        <article class="card"><h3>Cloud-connected bot</h3><p>AetherisBot handles Twitch messaging while the desktop client remains the secure local playback bridge.</p></article>
+        <article class="card"><h3>Queue management</h3><p>See what's up next, manually accept requests, skip tracks, and keep request history organized.</p></article>
+        <article class="card"><h3>Streamer controls</h3><p>Themes, backups, custom responses, tray behavior, offline suppression, and practical controls without unnecessary accounts.</p></article>
+      </div>
+    </section>
+
+    <section id="setup" class="section alt">
+      <div class="wrap">
+        <div class="section-head left"><p>QUICK START</p><h2>From install to first request.</h2></div>
+        <div class="steps">
+          <div><b>1</b><h3>Install Aetheris</h3><p>Download the latest Windows installer and launch Aetheris.</p></div>
+          <div><b>2</b><h3>Connect Twitch</h3><p>Authorize your Twitch channel so AetherisBot can handle song-request messages.</p></div>
+          <div><b>3</b><h3>Choose your player</h3><p>Connect Spotify or enable the YouTube Music Desktop Companion Server.</p></div>
+          <div><b>4</b><h3>Go live</h3><p>Add the OBS overlay if you want one, enable requests, and let chat use your song-request command.</p></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="download" class="section wrap">
+      <div class="download glass">
+        <div><p class="kicker">LATEST RELEASE</p><h2>Aetheris <span>v1.4.0</span></h2><p>Windows desktop application • Electron + Node.js</p><small>The public installer link can be connected to your GitHub Release when you're ready.</small></div>
+        <div class="download-actions"><a class="button" href="https://github.com/Nyxia-Code/Aetheris/releases/latest" target="_blank" rel="noopener">Open Latest Release ↗</a><a class="textlink" href="support.html">Need help installing? →</a></div>
+      </div>
+    </section>
+
+    <section id="support" class="section wrap support">
+      <div><p class="kicker">SUPPORT</p><h2>Something not working?</h2><p>Check the setup steps first. For bugs or feedback, contact Aetheris support and include your Aetheris version plus a short description of what happened.</p></div>
+      <a class="button ghost" href="mailto:nyxia.codeservice@gmail.com">nyxia.codeservice@gmail.com</a>
+    </section>
+  </main>
+
+  <footer><div class="wrap"><div class="brand"><img class="brand-icon" src="assets/aetheris-icon.png" alt=""><span>Aetheris</span></div><p>Built for streamers. Powered by AetherisBot.</p><span>© <span id="year"></span> Aetheris</span></div></footer>
+  <script src="assets/app.js"></script>
+</body>
+</html>
