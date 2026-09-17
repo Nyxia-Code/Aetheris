@@ -1,0 +1,4 @@
+Aetheris Website v1.0.10
+Temporary release-sync diagnostics build.
+Adds console checkpoints around target detection and the GitHub releases/latest request.
+No static release fallback. No backend/server files.
