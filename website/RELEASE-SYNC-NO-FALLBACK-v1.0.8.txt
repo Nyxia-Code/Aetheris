@@ -1,4 +1,4 @@
-Aetheris Website v1.0.8
+Aetheris Website v1.0.9
 
 Release sync diagnostic/hardening change:
 - Removed static desktop app version fallback from homepage and download page.
