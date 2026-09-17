@@ -1,0 +1,6 @@
+Aetheris Website v1.0.7
+- Homepage release version now uses GitHub release sync.
+- Release sync no longer requires the Download page elements to exist.
+- Static fallback is v1.4.2.
+- Updated stale v1.4.1 installer filename fallback.
+- Cache-busted app.js to v1.0.7.

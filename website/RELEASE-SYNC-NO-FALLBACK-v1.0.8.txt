@@ -1,0 +1,9 @@
+Aetheris Website v1.0.8
+
+Release sync diagnostic/hardening change:
+- Removed static desktop app version fallback from homepage and download page.
+- Removed static installer and installed-EXE checksum fallbacks.
+- Pages show Loading until GitHub responds.
+- On failure, pages visibly show SYNC FAILED and the download page prints the GitHub API error.
+- On success, version comes only from the latest GitHub release tag.
+- Verification values come only from GitHub asset digest/release notes.
