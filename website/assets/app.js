@@ -66,3 +66,105 @@ document.querySelectorAll(".copy-code").forEach(btn=>btn.addEventListener("click
   }
 
 })();
+
+
+// Keep public release information synced to GitHub. There is intentionally NO
+// static version/checksum fallback: a sync failure must be visible instead of
+// silently showing stale release information.
+(()=>{
+  const versionEls=[...document.querySelectorAll("[data-release-version], #latest-version, #verify-version, #hash-match-version")];
+  const installerLink=document.getElementById("latest-installer");
+  if(!versionEls.length&&!installerLink)return;
+  const releasePage=document.getElementById("latest-release-page");
+  const installerHash=document.getElementById("installer-hash");
+  const installerHashRow=document.getElementById("installer-hash-row");
+  const installedExeRow=document.getElementById("installed-exe-hash-row");
+  const installerVt=document.getElementById("installer-vt");
+  const installedExeVt=document.getElementById("installed-exe-vt");
+  const note=document.getElementById("release-sync-note");
+  const filenameEl=document.getElementById("installer-filename");
+  const hashCommand=document.getElementById("hash-command");
+  const hashCopy=document.getElementById("hash-copy");
+
+  const setVersions=text=>versionEls.forEach(el=>el.textContent=text);
+  const showNote=(text,isError=false)=>{
+    if(!note)return;
+    note.hidden=false;
+    note.textContent=text;
+    note.dataset.syncError=isError?"true":"false";
+  };
+
+  fetch("https://api.github.com/repos/Nyxia-Code/Aetheris/releases/latest",{
+    headers:{Accept:"application/vnd.github+json"},cache:"no-store"
+  })
+    .then(async r=>{
+      if(!r.ok){
+        const remaining=r.headers.get("x-ratelimit-remaining");
+        throw new Error(`GitHub API returned HTTP ${r.status}${remaining!==null?` (rate-limit remaining: ${remaining})`:""}`);
+      }
+      return r.json();
+    })
+    .then(release=>{
+      const assets=Array.isArray(release.assets)?release.assets:[];
+      const installer=assets.find(a=>/aetheris.*setup.*\.exe$/i.test(a.name||"")) || assets.find(a=>/\.exe$/i.test(a.name||""));
+      const tagMatch=String(release.tag_name||"").match(/(\d+\.\d+\.\d+)/);
+      if(!tagMatch)throw new Error(`Latest GitHub release has an unreadable tag: ${release.tag_name||"(missing)"}`);
+      const version=`v${tagMatch[1]}`;
+      setVersions(version);
+
+      if(releasePage&&release.html_url)releasePage.href=release.html_url;
+      if(installerLink){
+        if(installer&&installer.browser_download_url){
+          installerLink.href=installer.browser_download_url;
+          installerLink.textContent=`Download ${version} installer ↗`;
+        }else if(release.html_url){
+          installerLink.href=release.html_url;
+          installerLink.textContent=`Open ${version} release ↗`;
+        }
+      }
+      if(installer){
+        if(filenameEl)filenameEl.textContent=installer.name;
+        const cmd=`Get-FileHash ".\\${installer.name}" -Algorithm SHA256`;
+        if(hashCommand)hashCommand.textContent=cmd;
+        if(hashCopy)hashCopy.dataset.copy=cmd;
+      }
+
+      const digest=installer&&typeof installer.digest==="string"&&installer.digest.toLowerCase().startsWith("sha256:")
+        ? installer.digest.slice(7).toUpperCase():"";
+      if(installerHash)installerHash.textContent=digest||"Not published by GitHub for this installer";
+      if(installerHashRow)installerHashRow.hidden=false;
+      if(installerVt){
+        installerVt.hidden=!digest;
+        if(digest)installerVt.href=`https://www.virustotal.com/gui/file/${digest}`;
+      }
+
+      const body=String(release.body||"");
+      const exeMatch=body.match(/Installed\s+EXE(?:\s+SHA-?256)?[\s\S]{0,160}?\b([A-Fa-f0-9]{64})\b/i);
+      const exeDigest=exeMatch?exeMatch[1].toUpperCase():"";
+      if(installedExeRow){
+        installedExeRow.hidden=false;
+        const code=installedExeRow.querySelector("code");
+        if(code)code.textContent=exeDigest||"Not found in GitHub release notes";
+      }
+      if(installedExeVt){
+        installedExeVt.hidden=!exeDigest;
+        if(exeDigest)installedExeVt.href=`https://www.virustotal.com/gui/file/${exeDigest}`;
+      }
+      showNote(`Live GitHub sync OK — ${version} (${release.tag_name}).`);
+      console.info("[Aetheris release sync]",{version,tag:release.tag_name,installer:installer&&installer.name,installerDigest:!!digest,installedExeDigest:!!exeDigest});
+    })
+    .catch(err=>{
+      setVersions("SYNC FAILED");
+      if(installerHash)installerHash.textContent="Release sync failed";
+      if(installedExeRow){
+        installedExeRow.hidden=false;
+        const code=installedExeRow.querySelector("code");
+        if(code)code.textContent="Release sync failed";
+      }
+      if(installerVt)installerVt.hidden=true;
+      if(installedExeVt)installedExeVt.hidden=true;
+      showNote(`GitHub release sync failed: ${err.message}`,true);
+      console.error("[Aetheris release sync]",err);
+    });
+})();
+
