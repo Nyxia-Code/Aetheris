@@ -154,3 +154,4 @@ You can also use the GitHub repository to report issues and follow new Aetheris 
 **CodedByNyxia**
 
 Aetheris is actively developed and improved with a focus on making Twitch song requests easier to manage for both streamers and viewers.
+
