@@ -1,0 +1,87 @@
+{
+  "name": "aetheris",
+  "version": "1.4.2",
+  "description": "Aetheris \u2014 Twitch song-request control panel with OBS overlay",
+  "main": "main.js",
+  "author": "",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dev-mode": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/launch-developer.ps1",
+    "dist": "electron-builder",
+    "release-verify": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/release-verification.ps1",
+    "dist-dev": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-dev.ps1"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.8.1",
+    "electron-updater": "^6.3.9",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "electron": "^32.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.aetheris.app",
+    "productName": "Aetheris",
+    "files": [
+      "main.js",
+      "preload.js",
+      "aetheris.html",
+      "aetheris-youtube-api-setup.html"
+    ],
+    "publish": {
+      "provider": "github",
+      "owner": "Nyxia-Code",
+      "repo": "Aetheris"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "icon.ico",
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "icon.ico",
+      "uninstallerIcon": "icon.ico",
+      "installerHeaderIcon": "icon.ico",
+      "installerSidebar": "installer_sidebar.bmp",
+      "uninstallerSidebar": "installer_sidebar.bmp",
+      "createDesktopShortcut": true,
+      "shortcutName": "Aetheris"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "linux": {
+      "target": "AppImage"
+    },
+    "extraResources": [
+      {
+        "from": "aetheris-youtube-api-setup.html",
+        "to": "aetheris-youtube-api-setup.html"
+      },
+      {
+        "from": "aetheris.html",
+        "to": "aetheris-ui.html"
+      },
+      {
+        "from": "aetheris.html",
+        "to": "aetheris-overlay.html"
+      },
+      {
+        "from": "icon.ico",
+        "to": "icon.ico"
+      },
+      {
+        "from": "aetheris-renderer.js",
+        "to": "aetheris-renderer.js"
+      }
+    ]
+  },
+  "allowScripts": {
+    "electron@32.3.3": true
+  }
+}

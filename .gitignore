@@ -1,1 +1,50 @@
-*.exe    
+# ==============================
+# Aetheris - Git Ignore
+# ==============================
+
+# Private root development files
+Aetheris-Developer-Mode.bat
+AUDIT-NOTES.txt
+DEVELOPER-MODE.txt
+Things i want to add to Aetheris..txt
+README.md
+
+# App dependencies / generated builds
+app/node_modules/
+app/dist/
+app/dist-dev/
+
+# Private development/build scripts
+app/scripts/
+
+#Private backend/serversource
+app/server.js
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Secrets / environment files
+.env
+.env.*
+!.env.example
+*.local
+*.secret
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Temporary/cache files
+*.tmp
+*.temp
+*.bak
+*~
+coverage/
+.cache/
+.npm/

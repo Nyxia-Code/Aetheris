@@ -1,0 +1,22 @@
+﻿Aetheris v1.4.2 - Release Security Verification
+=================================================
+
+Generated: 2026-09-15 21:41:38 -05:00
+
+INSTALLER
+---------
+File: Aetheris-Setup-1.4.2.exe
+SHA-256: 620E09B517B5E6856123E594CFE945A4698BA9B8FBBD9AEDD8CF5CB8BF397B8E
+VirusTotal: https://www.virustotal.com/gui/file/620E09B517B5E6856123E594CFE945A4698BA9B8FBBD9AEDD8CF5CB8BF397B8E
+VirusTotal status: completed
+
+INSTALLED APPLICATION
+---------------------
+File: Aetheris.exe
+SHA-256: C5592E8F41C9C776FFCCD288038FD775411B5C4037D593077E3F81B6E280BB20
+VirusTotal: https://www.virustotal.com/gui/file/C5592E8F41C9C776FFCCD288038FD775411B5C4037D593077E3F81B6E280BB20
+VirusTotal status: completed
+
+Verification note:
+The installed executable SHA-256 above identifies the exact Aetheris.exe checked during this release verification run.
+The VirusTotal links are permanent file-report links based on each file's SHA-256.

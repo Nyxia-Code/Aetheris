@@ -1,156 +1,85 @@
-# Aetheris
-
-**Aetheris is an all-in-one Twitch song request manager built to make handling music requests simple, automatic, and customizable.** It connects directly with Twitch, Spotify, and YouTube Music Desktop, letting viewers request songs through chat while Aetheris handles searching, queueing, playback, and transitions behind the scenes.
-
-With Aetheris, you can manage your request queue from a clean desktop dashboard, add songs manually, view what's currently playing and recently played, configure custom Twitch commands and cooldowns, and control how requests behave.
-
-YouTube Music Desktop integration provides realtime playback tracking, automatic request transitions, playlist rejoining, and shuffle support, while Spotify integration allows requests to be sent directly to your active Spotify player.
-
-**Set it up once, start your music, and let Aetheris handle the requests.**
-
----
-
-## Features
-
-- Twitch chat song requests
-- Spotify integration
-- YouTube Music Desktop integration
-- Realtime playback tracking
-- Automatic song request queue
-- Automatic playlist rejoining
-- Shuffle support
-- Manual song requests from the dashboard
-- Custom Twitch commands and cooldowns
-- Recently played history
-- Custom themes and appearance settings
-- Customizable OBS overlay
-- Full setup export/import
-- Customization-only export/import
-- Built-in YouTube API setup tutorial
-- Automatic update checking
-
----
-
-## Installation
-
-1. Go to the **Releases** section of the Aetheris GitHub repository.
-2. Download the latest Aetheris installer.
-3. Run the installer.
-4. Open Aetheris and complete the setup for the services you want to use.
-
-> Aetheris requires your own API credentials for certain integrations.
-
-### ⚠️ Windows SmartScreen Notice
-
-Aetheris is currently distributed without a paid Windows code-signing certificate. Because of this, Windows SmartScreen may display a **"Windows protected your PC"** warning when you run the installer.
-
-This warning does **not automatically mean Aetheris is malicious**. SmartScreen commonly warns about unsigned applications or applications that have not yet built enough reputation with Microsoft.
-
-If you downloaded Aetheris from the official GitHub release, you can continue by:
-
-1. Click **More info** on the SmartScreen warning.
-2. Verify that the app shown is **Aetheris**.
-3. Click **Run anyway**.
-
-### 🔐 Verify Before Installing
-
-For additional transparency, official Aetheris releases include **VirusTotal verification and SHA-256 hashes** for the Windows installer and installed application.
-
-Check the release notes for the version you're downloading to find its VirusTotal reports and SHA-256 hashes. You can use these to verify that your downloaded installer matches the file checked before release.
-
-**Only download Aetheris from the official Aetheris GitHub repository/releases.**
-
----
-
-## Setup
-
-### Twitch
-
-Connect Aetheris to your Twitch account and configure your song request commands from the app.
-
-You can customize commands, cooldowns, request behavior, and other Twitch settings directly inside Aetheris.
-
-### YouTube Music Desktop
-
-Aetheris uses two components for YouTube Music requests:
-
-**YouTube Data API v3** searches for requested songs.
-
-**YouTube Music Desktop Companion Server** handles playback, realtime tracking, song transitions, playlist rejoining, and shuffle.
-
-Aetheris includes a built-in tutorial showing you how to create your own YouTube API key.
-
-### Spotify
-
-Enter your Spotify Client ID and complete the authorization process from inside Aetheris.
-
-Aetheris uses Spotify's PKCE authentication flow, so a Client Secret is not required.
-
----
-
-## Usage
-
-Once everything is connected, start playing music and leave Aetheris running.
-
-Your viewers can submit song requests through Twitch chat using your configured request command.
-
-Aetheris will:
-
-1. Find the requested song.
-2. Add it to the request queue.
-3. Monitor the currently playing song.
-4. Automatically transition to the requested song.
-5. Continue through additional requests.
-6. Return to your playlist when the request queue is finished.
-
-You can also add songs manually from the Aetheris Dashboard.
-
----
-
-## OBS Overlay
-
-Aetheris includes an OBS-friendly overlay for displaying music information on your stream.
-
-The overlay can be customized separately from the main application, allowing you to adjust its appearance to match your stream.
-
----
-
-## Backup & Restore
-
-Moving Aetheris to another PC or reinstalling Windows?
-
-Use **Settings → Export All** to create a backup of the information needed to set Aetheris back up.
-
-You can restore it using **Import All** on the new installation.
-
-> Full setup backups can contain API keys and authorization tokens. Keep these files private and never upload them publicly.
-
-A separate customization export/import option is also available if you only want to transfer your appearance and overlay settings.
-
----
-
-## Updating
-
-Aetheris can automatically check GitHub for new releases.
-
-When an update is available, you can choose whether to install it immediately or wait until later.
-
-You can also manually check for updates from the **About** page.
-
----
-
-## Support & Feedback
-
-Found a bug, have a suggestion, or need help setting up Aetheris?
-
-**Email:** nyxia.codeservice@gmail.com
-
-You can also use the GitHub repository to report issues and follow new Aetheris releases.
-
----
-
-## Developer
-
-**CodedByNyxia**
-
-Aetheris is actively developed and improved with a focus on making Twitch song requests easier to manage for both streamers and viewers.
+# Aetheris (desktop build)
+
+This turns Aetheris from a single HTML file into a small Electron app, so the
+YouTube Music Desktop realtime connection is made from a real Node.js
+process instead of from code running inside a browser tab.
+
+## Why this fixes the connection
+
+A browser (including Electron's own renderer/webview) automatically attaches
+an `Origin` header to every WebSocket handshake, and there's no way for page
+JavaScript to remove it. If Companion Server's realtime endpoint is rejecting
+based on that header, wrapping the same page in any kind of "HTML to EXE"
+shell doesn't change anything, because it's still a browser tab underneath.
+
+What's different here: the actual `socket.io-client` connection now lives in
+`main.js`, which runs in Electron's **main process** — a plain Node.js
+process, not a rendered page. Node's socket/WebSocket stack doesn't send a
+browser `Origin` header at all, which is exactly why YTM Desktop's own
+official Node/C#/TypeScript companion libraries connect fine. `main.js` owns
+the socket and forwards `state-update` / `connect` / `disconnect` /
+`connect_error` events to the existing control panel over Electron's IPC
+(`preload.js` is the bridge). Everything else — Twitch chat, Spotify, the
+overlay, all your settings and UI — is the exact same `aetheris.html` as
+before, untouched.
+
+The app also still works as a REST-polling fallback (same as it always has)
+if the realtime channel still can't connect for some other reason — you'll
+see that in the in-app log either way.
+
+## What's in this folder
+
+```
+app/
+  main.js        Electron main process — owns the real Node socket to Companion Server
+  preload.js     IPC bridge exposed to the page as window.ytmdRealtime
+  aetheris.html  Your app, with startYtmdRealtime()/stopYtmdRealtime() updated
+                 to use window.ytmdRealtime when present, otherwise falling
+                 back to the old in-browser Socket.IO client
+  package.json   Electron + electron-builder config (builds a Windows .exe)
+```
+
+## Building it (on your machine — this needs npm/network, which I don't have here)
+
+1. Install [Node.js](https://nodejs.org) if you don't have it (any recent LTS).
+2. Open a terminal in the `app/` folder and run:
+   ```
+   npm install
+   ```
+3. To just run it and test the fix, without building an installer yet:
+   ```
+   npm start
+   ```
+4. Once it works, build the actual `.exe`:
+   ```
+   npm run dist
+   ```
+   This uses `electron-builder` (already listed in `devDependencies`) and
+   drops an installer in `app/dist/` — something like
+   `Aetheris Setup 1.0.0.exe`. Running that installs Aetheris as a normal
+   Windows app with a desktop shortcut.
+
+   (`electron-builder` needs an `icon.ico` referenced in `package.json`'s
+   `win.icon` — if you don't have one yet, either delete that `"icon"` line
+   from `package.json` or drop any `.ico` file into `app/` under that name;
+   it'll build fine without a custom icon too.)
+
+## Using it
+
+Everything works exactly like the browser version — same Settings, same
+Twitch/Spotify/YTMD setup, same overlay. Just do the YTM Desktop pairing
+(Settings → Integrations → Companion Server, then "Connect" in Aetheris)
+from inside this app instead of a browser tab, and watch the connection log:
+it should now say "Realtime connected" instead of falling back to polling.
+
+The OBS overlay URL still works exactly as before — OBS's own browser source
+still loads it as a plain URL with the credentials embedded in it, nothing
+about that changed.
+
+## If it still doesn't connect after this
+
+At that point origin rejection isn't the cause, and it's worth going back to
+the basics: is Companion Server actually toggled on in YTMD → Settings →
+Integrations, is the host/port right (default `127.0.0.1:9863`), and does
+"Test connection" in Aetheris's settings reach it at all. The in-app log
+under Settings will say specifically what failed.
