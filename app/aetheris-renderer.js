@@ -330,6 +330,9 @@ function logTwitch(msg){
 }
 const cooldowns = new Map();
 let spotifyPollHandle = null;
+let spotifyQueueCheckAt = 0;
+let spotifyQueueCheckBusy = false;
+const spotifyMissingQueueItems = new Map();
 
 let activePlaybackSource = null; // 'spotify' | 'ytmdesktop' | null
 
@@ -475,6 +478,8 @@ let twitchChannelLive = null;
 let twitchLiveStatusTimer = null;
 let twitchLiveStatusInFlight = false;
 let twitchOfflineSuppressionLogged = false;
+let cloudStartupPending = false;
+let cloudStartupTimer = null;
 
 window.aetherisBridge?.onAetherisBotStatus?.((status)=>{
   const wasAuthenticated=!!aetherisBotBridgeStatus.authenticated;
@@ -1327,6 +1332,8 @@ function renderUpcomingQueue(){
   const slot=document.getElementById('up-next-slot');
   if(!slot) return;
   const items=STATE.upNext||[];
+  const count=slot.parentElement?.querySelector('h3 .pill');
+  if(count) count.textContent=String(items.length);
   if(!items.length){ slot.innerHTML='<div class="empty-state">No Aetheris songs queued next.</div>'; return; }
   slot.innerHTML=items.slice(0,12).map((q,i)=>`<div class="queue-item"><div class="who">${i+1}</div><div class="what">${escapeHtml(q.title||'Untitled')} — ${escapeHtml(q.artist||'')}</div><div class="when">${escapeHtml(q.source==='youtube'?'YouTube':'Spotify')}</div></div>`).join('');
 }
@@ -1353,15 +1360,18 @@ function addUpNext(track, source, user='Aetheris', requested=false){
 async function logPlayedRequest(item, np){
   if(!item?.requested || STATE.settings.twitch.streamSongLogEnabled===false) return;
   try{
-    await window.aetherisBridge?.appendStreamSongLog?.({
+    if(!window.aetherisBridge?.appendStreamSongLog) throw new Error('Song log bridge unavailable. Restart Aetheris after replacing the files.');
+    const result=await window.aetherisBridge.appendStreamSongLog({
       title:np?.title || item.title,
       artist:np?.artist || item.artist || '',
       source:(np?.source==='ytmdesktop'?'YouTube':(np?.source || item.source)),
       requester:item.user || '',
       time:new Date().toLocaleTimeString()
     });
+    if(!result?.ok) throw new Error('Song log write was not confirmed.');
   }catch(e){
     console.warn('Could not append requested-song log:', e);
+    toast('Could not save requested song log: '+(e.message||'unknown error'));
   }
 }
 
@@ -1670,7 +1680,7 @@ function validateSettingsImport(input={}){
    Deliberately excludes STATE.settings entirely — API keys, tokens, and
    Twitch/Spotify connection info never belong in a file meant to be shared.
    ========================================================================= */
-function exportCustomization(){
+async function exportCustomization(){
   const includeOverlay = STATE.settings.__exportIncludeOverlay !== false;
   const payload = {
     __aetheris: 'customization',
@@ -1679,16 +1689,17 @@ function exportCustomization(){
     theme: STATE.theme,
     ...(includeOverlay ? { overlay: STATE.overlay } : {})
   };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'aetheris-customization.json';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-  toast('Exported'+(includeOverlay ? ' (theme + overlay)' : ' (theme only)'));
+  try{
+    const result=await window.aetherisBridge?.saveJsonExport?.({
+      title:'Save Aetheris customization',
+      fileName:'aetheris-customization.json',
+      contents:JSON.stringify(payload, null, 2)
+    });
+    if(result?.ok) toast('Exported'+(includeOverlay ? ' (theme + overlay)' : ' (theme only)'));
+  }catch(e){
+    console.error('Could not export customization',e);
+    toast('Could not save the customization export.');
+  }
 }
 
 async function importCustomizationFile(file){
@@ -1749,16 +1760,17 @@ async function exportFullSetup(){
     theme: STATE.theme,
     overlay: STATE.overlay
   };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type:'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'aetheris-full-setup.json';
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-  toast('Full Aetheris setup exported');
+  try{
+    const result=await window.aetherisBridge?.saveJsonExport?.({
+      title:'Save full Aetheris setup',
+      fileName:'aetheris-full-setup.json',
+      contents:JSON.stringify(payload, null, 2)
+    });
+    if(result?.ok) toast('Full Aetheris setup exported');
+  }catch(e){
+    console.error('Could not export full setup',e);
+    toast('Could not save the full setup export.');
+  }
 }
 
 async function importFullSetupFile(file){
@@ -2166,8 +2178,7 @@ function renderSettings(){
   });
   document.getElementById('ytmd-log-copy').addEventListener('click', ()=>{
     const text = ytmdLog.length ? ytmdLog.join('\n') : 'No connection attempts yet.';
-    navigator.clipboard?.writeText(text);
-    toast('Log copied');
+    copyConnectionLog(text);
   });
   document.getElementById('ytmd-return-playlist').addEventListener('change', e=>{
     s.youtubeDesktop.returnPlaylistUrl = e.target.value.trim();
@@ -2189,8 +2200,7 @@ function renderSettings(){
 
   document.getElementById('tw-log-copy').addEventListener('click', ()=>{
     const text = twitchLog.length ? twitchLog.join('\n') : 'No connection attempts yet.';
-    navigator.clipboard?.writeText(text);
-    toast('Log copied');
+    copyConnectionLog(text);
   });
 
 
@@ -2849,8 +2859,39 @@ function isAetherisBotConnected(){
   return !!aetherisBotBridgeStatus.authenticated;
 }
 
+function maybeAnnounceCloudStartup(){
+  if(IS_OVERLAY || !cloudStartupPending || cloudStartupTimer!==null || !isAetherisBotConnected()) return;
+  if(!STATE.settings.twitch.announceOnConnect){ cloudStartupPending=false; return; }
+  // Authentication can arrive before live status. Wait for that result while
+  // preserving the existing offline-chat setting and testing override.
+  if(!botMaySpeakInChat()){
+    if(twitchChannelLive===false) cloudStartupPending=false;
+    return;
+  }
+  // Separate startup from the initial now-playing message.
+  cloudStartupTimer=setTimeout(()=>{
+    cloudStartupTimer=null;
+    if(!cloudStartupPending || !isAetherisBotConnected()) return;
+    if(!STATE.settings.twitch.announceOnConnect){ cloudStartupPending=false; return; }
+    if(!botMaySpeakInChat()){
+      if(twitchChannelLive===false) cloudStartupPending=false;
+      return;
+    }
+    cloudStartupPending=false;
+    sayTwitch(fillTemplate(STATE.settings.twitch.connectAnnounceTemplate, templateContext()));
+  }, 1500);
+}
+
 function applyAetherisBotBridgeStatus(status={}){
+  const wasAuthenticated=!!aetherisBotBridgeStatus.authenticated;
   aetherisBotBridgeStatus = { ...aetherisBotBridgeStatus, ...status };
+  if(!aetherisBotBridgeStatus.authenticated){
+    cloudStartupPending=false;
+    if(cloudStartupTimer!==null) clearTimeout(cloudStartupTimer);
+    cloudStartupTimer=null;
+  }else if(!wasAuthenticated){
+    cloudStartupPending=true;
+  }
   if(status.streamStatusKnown === true){
     twitchChannelLive=!!status.streamLive;
     twitchOfflineSuppressionLogged=false;
@@ -2862,6 +2903,7 @@ function applyAetherisBotBridgeStatus(status={}){
     twitchChannelLive=null;
     updateOfflineBotStatusUi();
   }
+  maybeAnnounceCloudStartup();
   const paired=!!aetherisBotBridgeStatus.paired;
   const needsReauth=!!(aetherisBotBridgeStatus.authenticated && aetherisBotBridgeStatus.twitchAuthorizationKnown && !aetherisBotBridgeStatus.twitchAuthorized);
   const pill=document.getElementById('aetherisbot-cloud-status');
@@ -3455,6 +3497,56 @@ async function spotifyQueue(uri){
   });
 }
 
+async function copyConnectionLog(text){
+  try{
+    const result=await window.aetherisBridge?.copyLog?.(text);
+    if(!result?.ok) throw new Error('Clipboard unavailable');
+    toast('Log copied');
+  }catch(e){ toast('Could not copy log: '+e.message); }
+}
+
+async function reconcileSpotifyQueue(){
+  if(spotifyQueueCheckBusy || Date.now()<spotifyQueueCheckAt) return;
+  if(!(STATE.upNext||[]).some(q=>q.source==='spotify')) return;
+  spotifyQueueCheckBusy=true;
+  spotifyQueueCheckAt=Date.now()+7500;
+  const snapshot=new Set(STATE.upNext.map(q=>q.id));
+  try{
+    const data=await spotifyApi('/me/player/queue');
+    // Missing/invalid responses are not evidence that Spotify's queue is empty.
+    if(!data || !Array.isArray(data.queue)) return;
+    const counts=new Map();
+    for(const track of data.queue){
+      if(track?.uri) counts.set(track.uri,(counts.get(track.uri)||0)+1);
+    }
+    const before=STATE.upNext.length;
+    STATE.upNext=STATE.upNext.filter(item=>{
+      if(item.source!=='spotify' || !snapshot.has(item.id)) return true;
+      if((counts.get(item.uri)||0)>0){
+        counts.set(item.uri,counts.get(item.uri)-1);
+        spotifyMissingQueueItems.delete(item.id);
+        return true;
+      }
+      // Protect the currently playing request and newly added items while
+      // Spotify propagates queue changes. Require two successful snapshots.
+      if(data.currently_playing?.uri===item.uri || Date.now()-item.ts<10000){
+        spotifyMissingQueueItems.delete(item.id);
+        return true;
+      }
+      const misses=(spotifyMissingQueueItems.get(item.id)||0)+1;
+      spotifyMissingQueueItems.set(item.id,misses);
+      if(misses<2) return true;
+      spotifyMissingQueueItems.delete(item.id);
+      return false;
+    });
+    if(STATE.upNext.length!==before){ saveState(); renderUpcomingQueue(); }
+  }catch(e){
+    spotifyMissingQueueItems.clear();
+  }finally{
+    spotifyQueueCheckBusy=false;
+  }
+}
+
 function startSpotifyPolling(){
   if(spotifyPollHandle) return;
   pollSpotifyNow();
@@ -3465,6 +3557,7 @@ function startSpotifyPolling(){
 }
 function stopSpotifyPolling(){ clearInterval(spotifyPollHandle); spotifyPollHandle=null; }
 async function pollSpotifyNow(){
+  void reconcileSpotifyQueue();
   try{
     const data = await spotifyApi('/me/player/currently-playing');
     if(data && data.item){
@@ -4232,6 +4325,15 @@ applyTheme();
 // in-app "What's new" panel. Sorted newest-first automatically below, so
 // entries can be added in any order.
 const CHANGELOG = [
+  { version:'1.4.3', title:'Queue synchronization, announcements, backups & logging', notes:[
+    'Fixed Spotify queue clearing so Aetheris immediately clears its Dashboard Up Next queue when the Spotify queue is emptied.',
+    'Fixed startup announcements so the Aetheris initialization message is sent after the cloud bridge is authenticated and ready.',
+    'Restored reliable Now Playing announcement handling for cloud-connected channels.',
+    'Fixed Full Setup and Theme backup exports so the native Windows Save dialog opens and the selected backup file is written correctly.',
+    'Fixed requested-song logging so new requests continue saving to the daily song request log.',
+    'Improved copy-to-clipboard diagnostics and native clipboard fallback behavior for error logs.',
+    'Updated the Windows build toolchain to electron-builder 26.15.3 and refreshed dependency installation for clean development builds.'
+  ]},
   { version:'1.4.2', title:'Twitch commands, cloud reliability & stability', notes:[
     'Fixed custom Twitch song-request commands failing to match when older or imported settings stored the command without a leading !, including automatic repair of existing saved command settings.',
     'Hardened request, Now Playing, and Queue command normalization so custom command names remain compatible across saved settings and Full Setup restores.',

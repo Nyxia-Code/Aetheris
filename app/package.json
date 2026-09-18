@@ -1,6 +1,6 @@
 {
   "name": "aetheris",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "Aetheris \u2014 Twitch song-request control panel with OBS overlay",
   "main": "main.js",
   "author": "",
@@ -19,8 +19,8 @@
     "ws": "^8.21.3"
   },
   "devDependencies": {
-    "electron": "^32.0.0",
-    "electron-builder": "^25.0.0"
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3"
   },
   "build": {
     "appId": "com.aetheris.app",
@@ -82,6 +82,6 @@
     ]
   },
   "allowScripts": {
-    "electron@32.3.3": true
+    "electron@44.3.0": true
   }
 }

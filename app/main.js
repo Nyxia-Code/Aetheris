@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, dialog, Tray, Menu, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, Tray, Menu, safeStorage, clipboard } = require('electron');
 const path = require('path');
 const { fileURLToPath, pathToFileURL } = require('url');
 const fs = require('fs');
@@ -703,11 +703,35 @@ trustedHandle('app-export-error-log', async () => {
   return { ok: true, filePath: result.filePath };
 });
 
-/* ---------------- played-song session logs ----------------
-   No Twitch API dependency. Each Aetheris launch creates one timestamped
-   song log on first write. Keep at most 10 logs, deleting the oldest first.
+trustedHandle('app-save-json-export', async (payload = {}) => {
+  if (!isPlainObject(payload)) throw new Error('Invalid export payload.');
+  const fileName = clampString(payload.fileName, 120).replace(/[^A-Za-z0-9._-]/g, '-') || 'aetheris-export.json';
+  const contents = String(payload.contents ?? '');
+  if (!contents) throw new Error('Export data is empty.');
+  if (Buffer.byteLength(contents, 'utf8') > 5 * 1024 * 1024) throw new Error('Export data is too large.');
+  const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+  const result = await dialog.showSaveDialog(owner, {
+    title: clampString(payload.title || 'Save Aetheris export', 120),
+    defaultPath: path.join(app.getPath('downloads'), fileName),
+    filters: [{ name: 'JSON file', extensions: ['json'] }],
+  });
+  if (result.canceled || !result.filePath) return { canceled:true };
+  atomicPrivateWrite(result.filePath, contents, 'utf8');
+  return { ok:true, filePath:result.filePath };
+});
+
+trustedHandle('app-copy-log', (text) => {
+  if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > 1024 * 1024) throw new Error('Invalid log text.');
+  clipboard.writeText(text);
+  return { ok:true };
+});
+
+/* ---------------- played-song daily logs ----------------
+   No Twitch API dependency. Create a timestamped log on the first requested
+   song of each local day. Keep at most 10 logs, deleting the oldest first.
 */
 let currentSongLogPath = null;
+let currentSongLogDate = '';
 function songLogDir() {
   const dir = path.join(app.getPath('documents'), 'Aetheris', 'Song Logs');
   fs.mkdirSync(dir, { recursive: true });
@@ -733,8 +757,13 @@ function rotateSongLogs() {
   }
 }
 function ensureCurrentSongLog() {
-  if (currentSongLogPath) return currentSongLogPath;
   const now = new Date();
+  const dateKey = [
+    now.getFullYear(),
+    String(now.getMonth()+1).padStart(2,'0'),
+    String(now.getDate()).padStart(2,'0')
+  ].join('-');
+  if (currentSongLogPath && currentSongLogDate === dateKey && fs.existsSync(currentSongLogPath)) return currentSongLogPath;
   const stamp = [
     now.getFullYear(),
     String(now.getMonth()+1).padStart(2,'0'),
@@ -745,6 +774,7 @@ function ensureCurrentSongLog() {
     String(now.getSeconds()).padStart(2,'0')
   ].join('-');
   currentSongLogPath = path.join(songLogDir(), `Aetheris-Songs-${stamp}.txt`);
+  currentSongLogDate = dateKey;
   const header = [
     'Aetheris Song Log',
     '=================',
@@ -1130,6 +1160,57 @@ trustedHandle('update-download', async () => {
   return { ok: true };
 });
 
+function launchLocalUpdateInstaller(installerPath) {
+  const psQuote = value => `'${String(value).replace(/'/g, "''")}'`;
+  // Start-Process returns after launch, not after installation. Waiting for
+  // the installer itself would deadlock while NSIS waits for Aetheris to exit.
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    'try {',
+    `$installer = Start-Process -FilePath ${psQuote(installerPath)} -ArgumentList @('--updated', '/S', '--force-run') -PassThru -ErrorAction Stop`,
+    "if ($null -eq $installer) { throw 'Windows returned no installer process.' }",
+    "[Console]::Out.WriteLine('AETHERIS_INSTALLER_STARTED:' + $installer.Id)",
+    'exit 0',
+    '} catch {',
+    '[Console]::Error.WriteLine($_.Exception.Message)',
+    'exit 1',
+    '}',
+  ].join('\r\n');
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let stdout = '';
+    let stderr = '';
+    let timer;
+    let child;
+    const finish = (error, pid) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error); else resolve(pid);
+    };
+    try {
+      child = spawn('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),
+      ], { windowsHide:true, stdio:['ignore', 'pipe', 'pipe'] });
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', chunk => { stdout = (stdout + chunk).slice(-8192); });
+      child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-8192); });
+      child.once('error', error => finish(new Error('PowerShell could not start: ' + error.message)));
+      child.once('close', code => {
+        const match = stdout.match(/(?:^|\r?\n)AETHERIS_INSTALLER_STARTED:(\d+)(?:\r?\n|$)/);
+        if (code === 0 && match && Number(match[1]) > 0) finish(null, Number(match[1]));
+        else finish(new Error(stderr.trim() || `Installer launch was not confirmed (launcher exit ${code}).`));
+      });
+      timer = setTimeout(() => {
+        finish(new Error('Installer launch confirmation timed out. Check for a Windows approval prompt or running installer before retrying.'));
+        try { child.kill(); } catch (_) {}
+      }, 120000);
+    } catch (error) { finish(error); }
+  });
+}
+
 // Developer/manual release testing: choose a locally built NSIS installer and
 // run it with the same update-style flags electron-updater uses. This lets the
 // developer validate the exact installer before publishing it to GitHub.
@@ -1152,36 +1233,16 @@ trustedHandle('update-install-from-file', async () => {
     throw new Error('Please select an Aetheris-Setup-<version>.exe installer.');
   }
 
-  // Start the installer only after Aetheris has had time to exit. Launching
-  // NSIS while this process is still alive can make the silent updater wait on
-  // Aetheris while Aetheris waits for the launcher, which looks like a frozen
-  // "Update from File" operation. A detached PowerShell helper breaks that
-  // cycle and preserves the shell-based launch used to avoid Node `spawn UNKNOWN`.
-  const psQuote = (value) => `'${String(value).replace(/'/g, "''")}'`;
-  const psCommand = [
-    'Start-Sleep -Milliseconds 1200;',
-    'Start-Process',
-    '-FilePath', psQuote(installerPath),
-    '-ArgumentList', psQuote('--updated,/S,--force-run'),
-  ].join(' ');
-
+  // Keep the app visible until Windows confirms that it created the installer
+  // process. A launcher error is returned to the existing About-page UI.
   try {
-    const child = spawn('powershell.exe', [
-      '-NoProfile',
-      '-NonInteractive',
-      '-ExecutionPolicy', 'Bypass',
-      '-Command', psCommand,
-    ], {
-      detached: true,
-      windowsHide: true,
-      stdio: 'ignore',
-    });
-    child.once('error', (err) => {
-      appendAppLog('ERROR', 'Local update launcher failed after handoff', err?.message || String(err));
-    });
-    child.unref();
+    if (!fs.statSync(installerPath).isFile()) throw new Error('The selected installer is not a file.');
+    appendAppLog('INFO', 'Launching local update installer', path.basename(installerPath));
+    const pid = await launchLocalUpdateInstaller(installerPath);
+    appendAppLog('INFO', 'Local update installer launch confirmed', `pid=${pid}`);
   } catch (err) {
-    throw new Error('Could not hand off the selected installer: ' + (err?.message || err));
+    appendAppLog('ERROR', 'Local update installer launch failed', err?.message || String(err));
+    throw new Error('Could not launch the selected installer: ' + (err?.message || err));
   }
 
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();

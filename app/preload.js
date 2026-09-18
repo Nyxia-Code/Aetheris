@@ -75,6 +75,8 @@ contextBridge.exposeInMainWorld('aetherisBridge', {
   runRuntimeDiagnostics: () => ipcRenderer.invoke('app-runtime-diagnostics'),
   reportRendererError: (payload) => ipcRenderer.invoke('app-log-renderer-error', payload),
   exportErrorLog: () => ipcRenderer.invoke('app-export-error-log'),
+  saveJsonExport: (payload) => ipcRenderer.invoke('app-save-json-export', payload),
+  copyLog: (text) => ipcRenderer.invoke('app-copy-log', text),
   appendStreamSongLog: (song) => ipcRenderer.invoke('song-log-append', song),
   getStreamSongLogInfo: () => ipcRenderer.invoke('song-log-info'),
   openStreamSongLogFolder: () => ipcRenderer.invoke('song-log-open-folder'),
