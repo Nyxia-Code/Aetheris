@@ -2116,19 +2116,9 @@ function renderSettings(){
   });
   updateOfflineBotStatusUi();
   document.getElementById('tw-copy-oauth')?.addEventListener('click', async ()=>{
-    const input = document.getElementById('tw-bot-oauth');
-    const token = input?.value || '';
+    const token = document.getElementById('tw-bot-oauth')?.value || '';
     if(!token){ toast('No Twitch bot token to copy'); return; }
-    try{
-      await navigator.clipboard.writeText(token);
-      toast('Twitch bot token copied');
-    }catch(e){
-      input?.select();
-      try{ document.execCommand('copy'); toast('Twitch bot token copied'); }
-      catch(err){ toast('Could not copy Twitch bot token'); }
-      input?.setSelectionRange?.(0, 0);
-      input?.blur?.();
-    }
+    await copyTextToClipboard(token, 'Twitch bot token copied', 'Could not copy Twitch bot token');
   });
 
   document.getElementById('sp-connect').addEventListener('click', ()=>{
@@ -2143,15 +2133,7 @@ function renderSettings(){
   });
   document.getElementById('sp-copy-redirect').addEventListener('click', async ()=>{
     const redirect = document.getElementById('sp-redirect-uri')?.value || cachedSpotifyRedirectUri;
-    try{
-      await navigator.clipboard.writeText(redirect);
-      toast('Spotify redirect URI copied');
-    }catch(e){
-      const input=document.getElementById('sp-redirect-uri');
-      input?.select();
-      try{ document.execCommand('copy'); toast('Spotify redirect URI copied'); }
-      catch(err){ toast('Could not copy redirect URI'); }
-    }
+    await copyTextToClipboard(redirect, 'Spotify redirect URI copied', 'Could not copy redirect URI');
   });
 
   document.getElementById('yt-save').addEventListener('click', ()=>{
@@ -2644,9 +2626,8 @@ async function renderOverlayTab(){
     document.getElementById('wrap-ov-canvas-backdrop').classList.toggle('on', e.target.checked);
     previewOverlayLive();
   });
-  document.getElementById('ov-copy').addEventListener('click', ()=>{
-    navigator.clipboard?.writeText(overlayUrl);
-    toast('Overlay URL copied');
+  document.getElementById('ov-copy').addEventListener('click', async ()=>{
+    await copyTextToClipboard(overlayUrl, 'Overlay URL copied', 'Could not copy overlay URL');
   });
   document.getElementById('ov-preview').addEventListener('click', ()=>{
     window.open(overlayUrl, 'rd_overlay_preview', 'width='+(STATE.overlay.width+60)+',height=220');
@@ -3497,12 +3478,21 @@ async function spotifyQueue(uri){
   });
 }
 
-async function copyConnectionLog(text){
+async function copyTextToClipboard(text, successMessage='Copied', failureMessage='Could not copy'){
   try{
+    if(typeof text !== 'string' || !text) throw new Error('Nothing to copy');
     const result=await window.aetherisBridge?.copyLog?.(text);
     if(!result?.ok) throw new Error('Clipboard unavailable');
-    toast('Log copied');
-  }catch(e){ toast('Could not copy log: '+e.message); }
+    toast(successMessage);
+    return true;
+  }catch(e){
+    toast(failureMessage+': '+e.message);
+    return false;
+  }
+}
+
+async function copyConnectionLog(text){
+  return copyTextToClipboard(text, 'Log copied', 'Could not copy log');
 }
 
 async function reconcileSpotifyQueue(){
