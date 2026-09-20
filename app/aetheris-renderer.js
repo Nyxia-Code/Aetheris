@@ -558,16 +558,58 @@ function buildOverlayShell(){
       return;
     }
     const eventUrl=location.origin+'/events/'+token;
-    const events=new EventSource(eventUrl);
-    events.onmessage=(event)=>{
-      try{
-        const payload=JSON.parse(event.data||'{}');
-        if(payload.overlay && isPlainObject(payload.overlay)) STATE.overlay=deepMerge(structuredClone(DEFAULT_STATE.overlay), payload.overlay);
-        STATE.nowPlaying=payload.nowPlaying||null;
-        renderOverlay();
-      }catch(e){ console.error('Could not apply OBS relay update',e); }
+    let events=null;
+    let lastRelayEventAt=0;
+    let reconnectTimer=null;
+    let staleCleared=false;
+
+    const connectRelay=()=>{
+      if(events){ try{ events.close(); }catch(_){} }
+      events=new EventSource(eventUrl);
+      events.onopen=()=>{
+        // The relay sends the current state immediately after each connection,
+        // so a reconnect always performs an authoritative OBS resync.
+        lastRelayEventAt=Date.now();
+      };
+      events.onmessage=(event)=>{
+        try{
+          const payload=JSON.parse(event.data||'{}');
+          lastRelayEventAt=Date.now();
+          staleCleared=false;
+          if(payload.overlay && isPlainObject(payload.overlay)) STATE.overlay=deepMerge(structuredClone(DEFAULT_STATE.overlay), payload.overlay);
+          STATE.nowPlaying=payload.nowPlaying||null;
+          renderOverlay();
+        }catch(e){ console.error('Could not apply OBS relay update',e); }
+      };
+      events.onerror=()=>{
+        // OBS/Chromium normally reconnects EventSource itself, but explicitly
+        // cycling a stalled stream prevents a half-open localhost connection
+        // from leaving the Browser Source several updates behind Aetheris.
+        if(reconnectTimer) return;
+        reconnectTimer=setTimeout(()=>{
+          reconnectTimer=null;
+          connectRelay();
+        },350);
+      };
     };
-    events.onerror=()=>{};
+
+    connectRelay();
+    setInterval(()=>{
+      const age=lastRelayEventAt ? Date.now()-lastRelayEventAt : 0;
+      if(age>2500 && events?.readyState===EventSource.OPEN){
+        // The desktop publishes overlay state every 750ms. Going 2.5s with an
+        // open stream and no event means the connection is stale; reconnect
+        // now instead of waiting for OBS/Chromium's longer retry behavior.
+        connectRelay();
+      }
+      if(age>4000 && !staleCleared){
+        // Do not keep visually advancing an old song after Aetheris exits or
+        // the relay is unavailable. A successful reconnect restores state.
+        staleCleared=true;
+        STATE.nowPlaying=null;
+        renderOverlay();
+      }
+    },1000);
     return;
   }
 
@@ -2273,6 +2315,8 @@ async function renderAbout(){
     const btn=document.getElementById('check-update-btn'), status=document.getElementById('update-check-status');
     btn.disabled=true; status.textContent='Checking for updates…';
     try{
+      const patch=await window.aetherisBridge.checkForPatch?.();
+      if(patch?.available){ showPatchAvailable(patch); return; }
       const result=await window.aetherisBridge.checkForUpdates();
       if(result?.available) showUpdateAvailable(result.version);
       else status.textContent='You are up to date.';
@@ -4315,6 +4359,16 @@ applyTheme();
 // in-app "What's new" panel. Sorted newest-first automatically below, so
 // entries can be added in any order.
 const CHANGELOG = [
+  { version:'1.4.4', title:'Hot patches, copy buttons & update delivery', notes:[
+    'Added GitHub commit-based hot patches so compatible fixes can be delivered without rebuilding or reinstalling the full Aetheris installer.',
+    'Added automatic patch detection for safe app files, with patch downloads tied to the official Aetheris GitHub repository and release baseline.',
+    'Added SHA-256 verification and protected patch activation so downloaded files are verified before Aetheris uses them.',
+    'Added patch-aware version display and update prompts so small updates are shown to users as "v1.4.4 patch" instead of creating a new full version number.',
+    'Added restart handling for installed hot patches while keeping packaged application files available as the fallback runtime.',
+    'Fixed the OBS Overlay Copy URL button and standardized Aetheris copy buttons on the same native Electron clipboard handling for more reliable copying.',
+    'Fixed delayed/stale OBS overlay updates by actively resynchronizing stalled relay connections and clearing stale playback when Aetheris disconnects.',
+    'Restricted hot patches to approved non-privileged app files; changes to core Electron files still require a normal Aetheris installer update.'
+  ]},
   { version:'1.4.3', title:'Queue synchronization, announcements, backups & logging', notes:[
     'Fixed Spotify queue clearing so Aetheris immediately clears its Dashboard Up Next queue when the Spotify queue is emptied.',
     'Fixed startup announcements so the Aetheris initialization message is sent after the cloud bridge is authenticated and ready.',
@@ -4449,6 +4503,11 @@ function initSidebarVersionChangelog(){
   const hasVersion = el && window.aetherisBridge && window.aetherisBridge.version;
   if(hasVersion){
     el.textContent = 'v'+window.aetherisBridge.version;
+    window.aetherisBridge.getPatchStatus?.().then((patch)=>{
+      if(patch?.displayVersion && patch.displayVersion !== window.aetherisBridge.version){
+        el.textContent = 'v'+patch.displayVersion;
+      }
+    }).catch(()=>{});
     // Glow the version pill when this build has patch notes the user has not opened yet.
     // The glow follows the active theme via --accent / --accent-2 and clears after opening What's new.
     const currentVersion = String(window.aetherisBridge.version);
@@ -4482,7 +4541,22 @@ function initSidebarVersionChangelog(){
 }
 
 /* ---------------- update modal ---------------- */
+let pendingHotPatch = null;
+function showPatchAvailable(info){
+  pendingHotPatch = info?.targetCommit && Array.isArray(info?.files) ? info : null;
+  const backdrop = document.getElementById('update-modal-backdrop');
+  const title = document.getElementById('update-modal-title');
+  const text = document.getElementById('update-modal-text');
+  const updateBtn = document.getElementById('update-restart-btn');
+  const laterBtn = document.getElementById('update-later-btn');
+  if(title) title.textContent = 'Patch available';
+  if(text) text.innerHTML = 'Aetheris <b>'+escapeHtml(info?.displayVersion || ((window.aetherisBridge?.version||'')+' patch'))+'</b> is available. This is a small patch and does not require a new installer.';
+  if(updateBtn){ updateBtn.textContent='Install patch'; updateBtn.disabled=false; }
+  if(laterBtn){ laterBtn.textContent='Later'; laterBtn.disabled=false; laterBtn.style.display=''; }
+  if(backdrop) backdrop.classList.add('show');
+}
 function showUpdateAvailable(version){
+  pendingHotPatch = null;
   const backdrop = document.getElementById('update-modal-backdrop');
   const title = document.getElementById('update-modal-title');
   const text = document.getElementById('update-modal-text');
@@ -4502,6 +4576,7 @@ function showUpdateAvailable(version){
   const updateBtn = document.getElementById('update-restart-btn');
   const laterBtn = document.getElementById('update-later-btn');
   window.aetherisBridge.onUpdateAvailable((info)=> showUpdateAvailable(info?.version));
+  window.aetherisBridge.onPatchAvailable?.((info)=> showPatchAvailable(info));
   window.aetherisBridge.onUpdateDownloaded((info)=>{
     if(title) title.textContent='Installing update';
     if(text) text.innerHTML='Aetheris <b>v'+escapeHtml((info&&info.version)||'')+'</b> has downloaded. Restarting to finish the update…';
@@ -4510,6 +4585,23 @@ function showUpdateAvailable(version){
     setTimeout(()=>window.aetherisBridge.restartAndInstallUpdate(), 350);
   });
   if(updateBtn) updateBtn.addEventListener('click', async ()=>{
+    if(pendingHotPatch?.targetCommit){
+      updateBtn.textContent='Installing patch…';
+      updateBtn.disabled=true;
+      if(laterBtn) laterBtn.disabled=true;
+      if(text) text.textContent='Downloading and verifying the patch…';
+      try{
+        const result=await window.aetherisBridge.installPatch(pendingHotPatch);
+        if(text) text.innerHTML='Aetheris <b>'+escapeHtml(result?.displayVersion||'patch')+'</b> is installed. Restarting Aetheris to apply it…';
+        updateBtn.textContent='Restarting…';
+        setTimeout(()=>window.aetherisBridge.restartForPatch(), 350);
+      }catch(e){
+        if(text) text.textContent='Patch failed: '+(e.message||'unknown error');
+        updateBtn.textContent='Retry patch'; updateBtn.disabled=false;
+        if(laterBtn){ laterBtn.disabled=false; laterBtn.style.display=''; }
+      }
+      return;
+    }
     updateBtn.textContent='Downloading…';
     updateBtn.disabled=true;
     if(laterBtn) laterBtn.disabled=true;

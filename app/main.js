@@ -11,6 +11,17 @@ const { spawn } = require('child_process');
 const crypto = require('crypto');
 const net = require('net');
 
+// Lightweight hot-patch channel. GitHub commits on main are the patch feed.
+// Only safe renderer/UI source files can be activated this way; privileged app
+// changes still require a normal packaged release.
+const PATCH_GITHUB_OWNER = 'Nyxia-Code';
+const PATCH_GITHUB_REPO = 'Aetheris';
+const PATCH_GITHUB_BRANCH = 'main';
+const PATCH_ALLOWED_SOURCE_PATHS = new Set(['app/aetheris-renderer.js', 'app/aetheris.html']);
+const PATCH_RUNTIME_FILES = ['aetheris-renderer.js', 'aetheris-ui.html', 'aetheris-overlay.html'];
+const PATCH_REQUEST_TIMEOUT_MS = 15000;
+
+
 let mainWindow = null;
 let tray = null;
 let trayRetryTimer = null;
@@ -622,7 +633,7 @@ function startOverlayRelay() {
     }
     if (url.pathname === scriptPath) {
       try {
-        const body = fs.readFileSync(externalResourcePath('aetheris-renderer.js'));
+        const body = fs.readFileSync(runtimeResourcePath('aetheris-renderer.js'));
         res.writeHead(200, {'Content-Type':'text/javascript; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
         res.end(body);
       } catch (_) { res.writeHead(404).end(); }
@@ -805,6 +816,220 @@ trustedHandle('song-log-open-folder', async () => {
 });
 
 
+
+function patchRootDir() { return path.join(app.getPath('userData'), 'hotpatch'); }
+function patchRuntimeDir() { return path.join(patchRootDir(), 'runtime'); }
+function patchStatePath() { return path.join(patchRootDir(), 'state.json'); }
+function readPatchState() {
+  try {
+    const value = JSON.parse(fs.readFileSync(patchStatePath(), 'utf8'));
+    return value && typeof value === 'object' ? value : {};
+  } catch (_) { return {}; }
+}
+function patchDisplayVersion() {
+  const state = readPatchState();
+  return state.baseVersion === app.getVersion() && state.appliedCommit
+    ? `${app.getVersion()} patch`
+    : app.getVersion();
+}
+function activePatchedResourcePath(fileName) {
+  if (!PATCH_RUNTIME_FILES.includes(fileName)) return null;
+  const state = readPatchState();
+  if (state.baseVersion !== app.getVersion() || !state.appliedCommit) return null;
+  const candidate = path.join(patchRuntimeDir(), fileName);
+  return fs.existsSync(candidate) ? candidate : null;
+}
+function runtimeResourcePath(fileName) {
+  return activePatchedResourcePath(fileName) || externalResourcePath(fileName);
+}
+function fetchPatchBuffer(url, redirects = 0) {
+  return new Promise((resolve, reject) => {
+    if (redirects > 4) return reject(new Error('Too many patch download redirects.'));
+    let parsed;
+    try { parsed = new URL(url); } catch (_) { return reject(new Error('Invalid patch URL.')); }
+    if (parsed.protocol !== 'https:') return reject(new Error('Patch downloads must use HTTPS.'));
+    const req = https.get(parsed, { headers:{'User-Agent':`Aetheris/${app.getVersion()}`,'Accept':'application/vnd.github+json'}}, (res) => {
+      if ([301,302,303,307,308].includes(res.statusCode) && res.headers.location) {
+        res.resume();
+        return resolve(fetchPatchBuffer(new URL(res.headers.location, parsed).href, redirects + 1));
+      }
+      if (res.statusCode !== 200) {
+        const chunks=[];
+        res.on('data', chunk => chunks.push(chunk));
+        res.on('end', () => reject(new Error(`Patch server returned HTTP ${res.statusCode}: ${Buffer.concat(chunks).toString('utf8').slice(0,180)}`)));
+        return;
+      }
+      const chunks=[];
+      let size=0;
+      res.on('data', chunk => {
+        size += chunk.length;
+        if (size > 5 * 1024 * 1024) req.destroy(new Error('Patch response exceeds the 5 MB safety limit.'));
+        else chunks.push(chunk);
+      });
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+    });
+    req.setTimeout(PATCH_REQUEST_TIMEOUT_MS, () => req.destroy(new Error('Patch request timed out.')));
+    req.on('error', reject);
+  });
+}
+async function fetchGithubJson(apiPath) {
+  const url = `https://api.github.com/repos/${PATCH_GITHUB_OWNER}/${PATCH_GITHUB_REPO}${apiPath}`;
+  const body = await fetchPatchBuffer(url);
+  try { return JSON.parse(body.toString('utf8')); }
+  catch (_) { throw new Error('GitHub returned invalid JSON while checking for an Aetheris patch.'); }
+}
+function rawGithubUrl(commitSha, sourcePath) {
+  return `https://raw.githubusercontent.com/${PATCH_GITHUB_OWNER}/${PATCH_GITHUB_REPO}/${commitSha}/${sourcePath}`;
+}
+function classifyCommitFiles(files) {
+  const patchable=[];
+  const blocked=[];
+  for (const file of Array.isArray(files) ? files : []) {
+    const name=String(file?.filename || '');
+    if (PATCH_ALLOWED_SOURCE_PATHS.has(name)) patchable.push(name);
+    else if (name.startsWith('app/')) blocked.push(name);
+  }
+  return { patchable, blocked };
+}
+async function buildCommitPatchPlan() {
+  const state=readPatchState();
+  const releaseTag=`v${app.getVersion()}`;
+  const base=state.baseVersion === app.getVersion() && state.appliedCommit ? state.appliedCommit : releaseTag;
+  let comparison;
+  try {
+    comparison=await fetchGithubJson(`/compare/${encodeURIComponent(base)}...${encodeURIComponent(PATCH_GITHUB_BRANCH)}`);
+  } catch (err) {
+    if (String(err?.message || err).includes('HTTP 404')) {
+      throw new Error(`Could not find the ${releaseTag} release tag on GitHub. A full release must be tagged before commit patches can be used.`);
+    }
+    throw err;
+  }
+  const commits=Array.isArray(comparison?.commits) ? comparison.commits : [];
+  if (!commits.length) return { available:false, reason:'up-to-date', displayVersion:patchDisplayVersion() };
+
+  let targetSha=base;
+  const changedPatchFiles=new Set();
+  let blockedBy=null;
+  for (const commit of commits) {
+    const sha=String(commit?.sha || '');
+    if (!sha) continue;
+    const detail=await fetchGithubJson(`/commits/${encodeURIComponent(sha)}`);
+    const classified=classifyCommitFiles(detail?.files);
+    if (classified.blocked.length) {
+      blockedBy={ sha, files:classified.blocked };
+      break;
+    }
+    targetSha=sha;
+    for (const name of classified.patchable) changedPatchFiles.add(name);
+  }
+
+  if (!changedPatchFiles.size) {
+    return {
+      available:false,
+      reason:blockedBy ? 'full-release-required' : 'no-patchable-changes',
+      blockedBy,
+      displayVersion:patchDisplayVersion(),
+    };
+  }
+
+  const files=[];
+  for (const sourcePath of changedPatchFiles) {
+    const url=rawGithubUrl(targetSha, sourcePath);
+    const body=await fetchPatchBuffer(url);
+    files.push({
+      sourcePath,
+      path:path.basename(sourcePath),
+      url,
+      sha256:crypto.createHash('sha256').update(body).digest('hex'),
+    });
+  }
+  return {
+    available:true,
+    baseVersion:app.getVersion(),
+    fromCommit:base,
+    targetCommit:targetSha,
+    files,
+    blockedBy,
+    displayVersion:`${app.getVersion()} patch`,
+  };
+}
+function validateCommitPatchPlan(plan) {
+  if (!plan || typeof plan !== 'object') throw new Error('Invalid patch plan.');
+  if (String(plan.baseVersion || '') !== app.getVersion()) throw new Error('This patch is not for the installed Aetheris version.');
+  const targetCommit=String(plan.targetCommit || '');
+  if (!/^[a-f0-9]{40}$/i.test(targetCommit)) throw new Error('Invalid patch commit SHA.');
+  const files=Array.isArray(plan.files) ? plan.files : [];
+  if (!files.length) throw new Error('Patch plan has no files.');
+  for (const file of files) {
+    const sourcePath=String(file?.sourcePath || '');
+    const sha256=String(file?.sha256 || '').toLowerCase();
+    if (!PATCH_ALLOWED_SOURCE_PATHS.has(sourcePath)) throw new Error(`Patch file is not allowed: ${sourcePath || '(blank)'}`);
+    const expectedUrl=rawGithubUrl(targetCommit, sourcePath);
+    if (String(file?.url || '') !== expectedUrl) throw new Error(`Patch URL does not match the selected GitHub commit: ${sourcePath}`);
+    if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error(`Invalid SHA-256 for patch file: ${sourcePath}`);
+  }
+  return { baseVersion:app.getVersion(), targetCommit, files };
+}
+async function checkForHotPatch() {
+  if (!app.isPackaged) return { available:false, dev:true, displayVersion:app.getVersion() };
+  return buildCommitPatchPlan();
+}
+async function installHotPatch(plan) {
+  const requested=validateCommitPatchPlan(plan);
+  // Rebuild the plan in the privileged main process so the renderer cannot skip
+  // an unsafe commit or point the updater at a different GitHub revision.
+  const freshPlan=await buildCommitPatchPlan();
+  if (!freshPlan?.available || freshPlan.targetCommit !== requested.targetCommit) {
+    throw new Error('The GitHub patch changed while Aetheris was preparing to install it. Check for updates again.');
+  }
+  const checked=validateCommitPatchPlan(freshPlan);
+
+  const root=patchRootDir();
+  const staging=path.join(root, `staging-${process.pid}-${Date.now()}`);
+  const runtime=patchRuntimeDir();
+  fs.mkdirSync(staging, { recursive:true });
+  try {
+    // Start from the currently packaged runtime so every patch remains complete.
+    for (const name of PATCH_RUNTIME_FILES) {
+      const base=externalResourcePath(name);
+      if (fs.existsSync(base)) fs.copyFileSync(base, path.join(staging, name));
+    }
+    // If a previous patch exists, preserve its unchanged safe files too.
+    const previousState=readPatchState();
+    if (previousState.baseVersion === app.getVersion() && previousState.appliedCommit && fs.existsSync(runtime)) {
+      for (const name of PATCH_RUNTIME_FILES) {
+        const previous=path.join(runtime, name);
+        if (fs.existsSync(previous)) fs.copyFileSync(previous, path.join(staging, name));
+      }
+    }
+    for (const file of checked.files) {
+      const body=await fetchPatchBuffer(String(file.url));
+      const actual=crypto.createHash('sha256').update(body).digest('hex');
+      if (actual !== String(file.sha256).toLowerCase()) throw new Error(`SHA-256 verification failed for ${file.sourcePath}.`);
+      if (file.sourcePath === 'app/aetheris.html') {
+        fs.writeFileSync(path.join(staging, 'aetheris-ui.html'), body);
+        fs.writeFileSync(path.join(staging, 'aetheris-overlay.html'), body);
+      } else if (file.sourcePath === 'app/aetheris-renderer.js') {
+        fs.writeFileSync(path.join(staging, 'aetheris-renderer.js'), body);
+      }
+    }
+    const state={ baseVersion:checked.baseVersion, appliedCommit:checked.targetCommit, installedAt:new Date().toISOString() };
+    fs.writeFileSync(path.join(staging, 'state.json'), JSON.stringify(state, null, 2), 'utf8');
+    fs.mkdirSync(root, { recursive:true });
+    const backup=path.join(root, 'runtime-previous');
+    fs.rmSync(backup, { recursive:true, force:true });
+    if (fs.existsSync(runtime)) fs.renameSync(runtime, backup);
+    fs.renameSync(staging, runtime);
+    fs.copyFileSync(path.join(runtime, 'state.json'), patchStatePath());
+    appendAppLog('INFO', 'Aetheris GitHub commit patch installed', `${checked.baseVersion} patch @ ${checked.targetCommit.slice(0,7)}`);
+    return { ok:true, displayVersion:`${checked.baseVersion} patch`, commit:checked.targetCommit, restartRequired:true };
+  } catch (err) {
+    fs.rmSync(staging, { recursive:true, force:true });
+    appendAppLog('ERROR', 'Aetheris GitHub commit patch failed', err?.message || String(err));
+    throw err;
+  }
+}
+
 function externalResourcePath(fileName) {
   return path.join(app.isPackaged ? process.resourcesPath : __dirname, fileName);
 }
@@ -814,13 +1039,13 @@ function mainUiFilePath() {
   // Load the packaged UI from an explicit external resource so the installed app
   // never depends on aetheris.html also being duplicated inside app.asar.
   return app.isPackaged
-    ? externalResourcePath('aetheris-ui.html')
+    ? runtimeResourcePath('aetheris-ui.html')
     : path.join(__dirname, 'aetheris.html');
 }
 
 function obsOverlayFilePath() {
   return app.isPackaged
-    ? externalResourcePath('aetheris-overlay.html')
+    ? runtimeResourcePath('aetheris-overlay.html')
     : path.join(__dirname, 'aetheris.html');
 }
 
@@ -1049,6 +1274,11 @@ function createWindow() {
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
     setupAutoUpdater();
+    checkForHotPatch().then((result) => {
+      if (result?.available && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('patch-available-event', result);
+      }
+    }).catch(err => appendAppLog('WARN', 'Hot patch startup check failed', err?.message || String(err)));
     // The renderer may already have started the paired cloud bridge during
     // bootstrap so its first visible status is accurate. Avoid tearing down
     // that healthy/in-progress socket with a duplicate startup connection.
@@ -1144,6 +1374,26 @@ function setupAutoUpdater() {
     console.error('[auto-update] check failed:', err);
   });
 }
+
+trustedHandle('patch-status', () => ({
+  ...readPatchState(),
+  displayVersion: patchDisplayVersion(),
+  baseVersion: app.getVersion(),
+}));
+trustedHandle('patch-check', async () => {
+  try { return await checkForHotPatch(); }
+  catch (err) {
+    appendAppLog('WARN', 'Hot patch check failed', err?.message || String(err));
+    return { available:false, error:err?.message || String(err), displayVersion:patchDisplayVersion() };
+  }
+});
+trustedHandle('patch-install', async (plan) => installHotPatch(plan));
+trustedHandle('patch-restart', () => {
+  app.relaunch();
+  app.isQuitting = true;
+  app.quit();
+  return { ok:true };
+});
 
 trustedHandle('update-check', async () => {
   if (!app.isPackaged) return { available: false, dev: true };
