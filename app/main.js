@@ -17,8 +17,8 @@ const net = require('net');
 const PATCH_GITHUB_OWNER = 'Nyxia-Code';
 const PATCH_GITHUB_REPO = 'Aetheris';
 const PATCH_GITHUB_BRANCH = 'main';
-const PATCH_ALLOWED_SOURCE_PATHS = new Set(['app/aetheris-renderer.js', 'app/aetheris.html']);
-const PATCH_RUNTIME_FILES = ['aetheris-renderer.js', 'aetheris-ui.html', 'aetheris-overlay.html'];
+const PATCH_ALLOWED_SOURCE_PATHS = new Set(['app/aetheris-renderer.js', 'app/aetheris.html', 'app/aetheris-overlay.html', 'app/aetheris-overlay.js']);
+const PATCH_RUNTIME_FILES = ['aetheris-renderer.js', 'aetheris-ui.html', 'aetheris-overlay.html', 'aetheris-overlay.js'];
 const PATCH_REQUEST_TIMEOUT_MS = 15000;
 
 
@@ -618,8 +618,9 @@ function startOverlayRelay() {
     let url;
     try { url = new URL(req.url, `http://127.0.0.1:${OVERLAY_RELAY_PORT}`); } catch (_) { res.writeHead(400).end(); return; }
     const overlayPath = `/overlay/${token}`;
-    const scriptPath = `/overlay/aetheris-renderer.js`;
+    const scriptPath = `/overlay/aetheris-overlay.js`;
     const eventsPath = `/events/${token}`;
+    const statePath = `/state/${token}`;
     if (url.pathname === overlayPath) {
       try {
         const body = fs.readFileSync(obsOverlayFilePath());
@@ -633,20 +634,29 @@ function startOverlayRelay() {
     }
     if (url.pathname === scriptPath) {
       try {
-        const body = fs.readFileSync(runtimeResourcePath('aetheris-renderer.js'));
+        const body = fs.readFileSync(runtimeResourcePath('aetheris-overlay.js'));
         res.writeHead(200, {'Content-Type':'text/javascript; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});
         res.end(body);
       } catch (_) { res.writeHead(404).end(); }
       return;
     }
+    if (url.pathname === statePath) {
+      res.writeHead(200, {
+        'Content-Type':'application/json; charset=utf-8', 'Cache-Control':'no-store',
+        'X-Content-Type-Options':'nosniff', 'Access-Control-Allow-Origin': `http://127.0.0.1:${OVERLAY_RELAY_PORT}`,
+      });
+      res.end(JSON.stringify(overlayRelayState));
+      return;
+    }
     if (url.pathname === eventsPath) {
       res.writeHead(200, {
         'Content-Type':'text/event-stream', 'Cache-Control':'no-store', 'Connection':'keep-alive',
-        'Access-Control-Allow-Origin': `http://127.0.0.1:${OVERLAY_RELAY_PORT}`,
+        'X-Accel-Buffering':'no', 'Access-Control-Allow-Origin': `http://127.0.0.1:${OVERLAY_RELAY_PORT}`,
       });
       overlayRelayClients.add(res);
-      res.write(`data: ${JSON.stringify(overlayRelayState)}\n\n`);
-      req.on('close', () => overlayRelayClients.delete(res));
+      res.write(`retry: 1000\ndata: ${JSON.stringify(overlayRelayState)}\n\n`);
+      const heartbeat = setInterval(() => { try { res.write(`: heartbeat ${Date.now()}\n\n`); } catch (_) {} }, 10000);
+      req.on('close', () => { clearInterval(heartbeat); overlayRelayClients.delete(res); });
       return;
     }
     res.writeHead(404, {'Content-Type':'text/plain; charset=utf-8'}).end('Not found');
@@ -1008,9 +1018,12 @@ async function installHotPatch(plan) {
       if (actual !== String(file.sha256).toLowerCase()) throw new Error(`SHA-256 verification failed for ${file.sourcePath}.`);
       if (file.sourcePath === 'app/aetheris.html') {
         fs.writeFileSync(path.join(staging, 'aetheris-ui.html'), body);
-        fs.writeFileSync(path.join(staging, 'aetheris-overlay.html'), body);
       } else if (file.sourcePath === 'app/aetheris-renderer.js') {
         fs.writeFileSync(path.join(staging, 'aetheris-renderer.js'), body);
+      } else if (file.sourcePath === 'app/aetheris-overlay.html') {
+        fs.writeFileSync(path.join(staging, 'aetheris-overlay.html'), body);
+      } else if (file.sourcePath === 'app/aetheris-overlay.js') {
+        fs.writeFileSync(path.join(staging, 'aetheris-overlay.js'), body);
       }
     }
     const state={ baseVersion:checked.baseVersion, appliedCommit:checked.targetCommit, installedAt:new Date().toISOString() };
@@ -1046,7 +1059,7 @@ function mainUiFilePath() {
 function obsOverlayFilePath() {
   return app.isPackaged
     ? runtimeResourcePath('aetheris-overlay.html')
-    : path.join(__dirname, 'aetheris.html');
+    : path.join(__dirname, 'aetheris-overlay.html');
 }
 
 trustedHandle('app-get-overlay-base-url', () => overlayRelayUrl());

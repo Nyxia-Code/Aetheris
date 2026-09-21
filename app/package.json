@@ -1,7 +1,7 @@
 {
   "name": "aetheris",
-  "version": "1.4.4",
-  "description": "Aetheris — Twitch song-request control panel with OBS overlay",
+  "version": "1.4.5",
+  "description": "Aetheris \u2014 Twitch song-request control panel with OBS overlay",
   "main": "main.js",
   "author": "",
   "license": "UNLICENSED",
@@ -29,7 +29,8 @@
       "main.js",
       "preload.js",
       "aetheris.html",
-      "aetheris-youtube-api-setup.html"
+      "aetheris-youtube-api-setup.html",
+      "aetheris-overlay.js"
     ],
     "publish": {
       "provider": "github",
@@ -68,7 +69,7 @@
         "to": "aetheris-ui.html"
       },
       {
-        "from": "aetheris.html",
+        "from": "aetheris-overlay.html",
         "to": "aetheris-overlay.html"
       },
       {
@@ -78,6 +79,10 @@
       {
         "from": "aetheris-renderer.js",
         "to": "aetheris-renderer.js"
+      },
+      {
+        "from": "aetheris-overlay.js",
+        "to": "aetheris-overlay.js"
       }
     ]
   },

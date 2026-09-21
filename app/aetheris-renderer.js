@@ -4359,6 +4359,18 @@ applyTheme();
 // in-app "What's new" panel. Sorted newest-first automatically below, so
 // entries can be added in any order.
 const CHANGELOG = [
+  { version:'1.4.5', title:'Standalone OBS overlay engine & reliability', notes:[
+    'Rebuilt the OBS Now Playing overlay as a dedicated standalone page instead of loading the full Aetheris application renderer inside OBS.',
+    'Added a direct current-state endpoint so a newly loaded or reconnected Browser Source can immediately recover the latest playback state.',
+    'Added independent one-second state synchronization alongside realtime events so OBS remains current even if its Chromium EventSource connection stalls.',
+    'Added SSE heartbeat traffic and reconnect recovery to keep long-running OBS Browser Sources healthy.',
+    'Fixed repeated overlay rerenders that could restart the vinyl spin and track-title marquee on every state synchronization update.',
+    'Changed routine playback progress updates so they no longer rebuild unchanged overlay visuals, allowing animations to continue smoothly while playback stays synchronized.',
+    'Added standalone overlay HTML and JavaScript to the approved hot-patch system so future overlay-only fixes can be delivered without a full installer update.',
+    'Fixed hot-patch resource handling so the main Aetheris UI and standalone OBS overlay remain separate patch targets instead of one replacing the other.',
+    'Separated overlay HTML, styling, and JavaScript from the main Aetheris UI to reduce overlay-specific regressions and make future overlay development safer.',
+    'Preserved existing overlay URLs, customization settings, playback progress, album art, marquee text, and visual styles.'
+  ]},
   { version:'1.4.4', title:'Hot patches, copy buttons & update delivery', notes:[
     'Added GitHub commit-based hot patches so compatible fixes can be delivered without rebuilding or reinstalling the full Aetheris installer.',
     'Added automatic patch detection for safe app files, with patch downloads tied to the official Aetheris GitHub repository and release baseline.',
