@@ -32,7 +32,9 @@ let autoUpdaterSetupDone = false;
 let rendererDownloadGuardInstalled = false;
 let ytmdSocket = null;
 let aetherisBotSocket = null;
+let aetherisBotConnectionAttempt = null;
 let aetherisBotReconnectTimer = null;
+let aetherisBotHeartbeatTimer = null;
 let aetherisBotStatus = { connected:false, connecting:false, authenticated:false, userId:'', lastError:'', streamStatusKnown:false, streamLive:false, streamStatusSource:'', twitchAuthorizationKnown:false, twitchAuthorized:false, twitchAuthReason:'', twitchAuthCheckedAt:0 };
 let aetherisBotManualDisconnect = false;
 
@@ -366,6 +368,8 @@ function sendAetherisBotStatus(extra = {}) {
 }
 function teardownAetherisBotSocket({ manual = false } = {}) {
   if (manual) aetherisBotManualDisconnect = true;
+  aetherisBotConnectionAttempt?.finish({ ok:false, reason:manual ? 'disconnected' : 'superseded' });
+  if (aetherisBotHeartbeatTimer) { clearInterval(aetherisBotHeartbeatTimer); aetherisBotHeartbeatTimer = null; }
   if (aetherisBotReconnectTimer) { clearTimeout(aetherisBotReconnectTimer); aetherisBotReconnectTimer = null; }
   const socket = aetherisBotSocket;
   aetherisBotSocket = null;
@@ -414,6 +418,7 @@ function scheduleAetherisBotReconnect() {
   }, 5000);
 }
 async function connectAetherisBotSocket() {
+  if (aetherisBotConnectionAttempt) return aetherisBotConnectionAttempt.promise;
   const loaded = loadAetherisBotAuth();
   if (!loaded.ok || !loaded.auth) {
     sendAetherisBotStatus({ connected:false, connecting:false, authenticated:false, userId:'', lastError:loaded.error || '' });
@@ -424,12 +429,31 @@ async function connectAetherisBotSocket() {
   aetherisBotManualDisconnect = false;
   const auth = loaded.auth;
   sendAetherisBotStatus({ connecting:true, authenticated:false, userId:auth.userId, lastError:'', streamStatusKnown:false, streamLive:false, streamStatusSource:'', twitchAuthorizationKnown:false, twitchAuthorized:false, twitchAuthReason:'', twitchAuthCheckedAt:0 });
-  return new Promise((resolve) => {
+  const attempt = { promise:null, finish:null };
+  aetherisBotConnectionAttempt = attempt;
+  attempt.promise = new Promise((resolve) => {
     let settled=false;
-    const socket = new WebSocket(AETHERIS_BOT_WS_URL, { handshakeTimeout:10000 });
+    let timeout=null;
+    const finish = value => {
+      if (settled) return;
+      settled=true;
+      if (timeout) clearTimeout(timeout);
+      if (aetherisBotConnectionAttempt === attempt) aetherisBotConnectionAttempt = null;
+      resolve(value);
+    };
+    attempt.finish = finish;
+    let socket;
+    try { socket = new WebSocket(AETHERIS_BOT_WS_URL, { handshakeTimeout:10000 }); }
+    catch (err) { finish({ ok:false, reason:redactSecrets(err?.message || String(err)) }); return; }
     aetherisBotSocket = socket;
-    const finish = value => { if (!settled) { settled=true; resolve(value); } };
     socket.on('open', () => {
+      // Keep idle desktop bridges alive through intermediaries even when chat
+      // is quiet. This is a WebSocket control frame, not a Twitch message.
+      aetherisBotHeartbeatTimer = setInterval(() => {
+        if (aetherisBotSocket !== socket || socket.readyState !== WebSocket.OPEN) return;
+        try { socket.ping(); } catch (_) { socket.terminate(); }
+      }, 25000);
+      aetherisBotHeartbeatTimer.unref?.();
       sendAetherisBotStatus({ connected:true, connecting:false, userId:auth.userId });
       socket.send(JSON.stringify({ type:'authenticate', userId:auth.userId, token:auth.token }));
     });
@@ -498,11 +522,13 @@ async function connectAetherisBotSocket() {
       }
     });
     socket.on('error', (err) => {
+      if (aetherisBotHeartbeatTimer) { clearInterval(aetherisBotHeartbeatTimer); aetherisBotHeartbeatTimer = null; }
       const message = redactSecrets(err?.message || String(err));
       sendAetherisBotStatus({ connected:false, connecting:false, authenticated:false, lastError:message });
       finish({ ok:false, reason:message });
     });
     socket.on('close', (code, reasonBuffer) => {
+      if (aetherisBotHeartbeatTimer) { clearInterval(aetherisBotHeartbeatTimer); aetherisBotHeartbeatTimer = null; }
       if (aetherisBotSocket === socket) aetherisBotSocket = null;
       const reason = clampString(Buffer.isBuffer(reasonBuffer) ? reasonBuffer.toString('utf8') : String(reasonBuffer || ''), 160);
       const closeDetail = `code=${Number(code || 0)}${reason ? ` reason=${reason}` : ''}`;
@@ -523,8 +549,13 @@ async function connectAetherisBotSocket() {
       finish({ ok:false, reason:`closed-${Number(code || 0)}` });
       scheduleAetherisBotReconnect();
     });
-    setTimeout(() => finish({ ok:aetherisBotStatus.authenticated, reason:aetherisBotStatus.authenticated ? undefined : 'timeout' }), 12000);
+    timeout = setTimeout(() => {
+      finish({ ok:false, reason:'timeout' });
+      // Do not let keepalive retain a socket that never authenticated.
+      if (socket.readyState === WebSocket.OPEN) socket.close();
+    }, 12000);
   });
+  return attempt.promise;
 }
 
 // Portable backup protection: authenticated reversible obfuscation. The keying
@@ -997,6 +1028,9 @@ async function installHotPatch(plan) {
   const root=patchRootDir();
   const staging=path.join(root, `staging-${process.pid}-${Date.now()}`);
   const runtime=patchRuntimeDir();
+  const backup=path.join(root, 'runtime-previous');
+  let previousRuntimeMoved=false;
+  let stagedRuntimeActivated=false;
   fs.mkdirSync(staging, { recursive:true });
   try {
     // Start from the currently packaged runtime so every patch remains complete.
@@ -1029,15 +1063,26 @@ async function installHotPatch(plan) {
     const state={ baseVersion:checked.baseVersion, appliedCommit:checked.targetCommit, installedAt:new Date().toISOString() };
     fs.writeFileSync(path.join(staging, 'state.json'), JSON.stringify(state, null, 2), 'utf8');
     fs.mkdirSync(root, { recursive:true });
-    const backup=path.join(root, 'runtime-previous');
     fs.rmSync(backup, { recursive:true, force:true });
-    if (fs.existsSync(runtime)) fs.renameSync(runtime, backup);
+    if (fs.existsSync(runtime)) {
+      fs.renameSync(runtime, backup);
+      previousRuntimeMoved=true;
+    }
     fs.renameSync(staging, runtime);
-    fs.copyFileSync(path.join(runtime, 'state.json'), patchStatePath());
+    stagedRuntimeActivated=true;
+    atomicPrivateWrite(patchStatePath(), JSON.stringify(state, null, 2), 'utf8');
     appendAppLog('INFO', 'Aetheris GitHub commit patch installed', `${checked.baseVersion} patch @ ${checked.targetCommit.slice(0,7)}`);
     return { ok:true, displayVersion:`${checked.baseVersion} patch`, commit:checked.targetCommit, restartRequired:true };
   } catch (err) {
-    fs.rmSync(staging, { recursive:true, force:true });
+    try {
+      if (stagedRuntimeActivated) fs.rmSync(runtime, { recursive:true, force:true });
+      if (previousRuntimeMoved) fs.renameSync(backup, runtime);
+    } catch (rollbackError) {
+      appendAppLog('ERROR', 'Hot patch rollback failed; previous runtime retained in runtime-previous', rollbackError?.message || String(rollbackError));
+    }
+    try { fs.rmSync(staging, { recursive:true, force:true }); } catch (cleanupError) {
+      appendAppLog('WARN', 'Could not remove hot patch staging files', cleanupError?.message || String(cleanupError));
+    }
     appendAppLog('ERROR', 'Aetheris GitHub commit patch failed', err?.message || String(err));
     throw err;
   }

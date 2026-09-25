@@ -277,6 +277,7 @@ let ovLastSignature = null;
 let ytmdToken = null;
 let ytmdPollHandle = null;
 let ytmdPendingQueue = [];
+let ytmdHandoffTrack = null;
 // Timing watchdog for queued-song/rejoin transitions. Instead of relying on
 // one long timeout (which becomes wrong if the user scrubs/seeks), this checks
 // the live YTMD progress repeatedly and only fires once the track is actually
@@ -304,6 +305,8 @@ let cachedSpotifyRedirectUri = location.origin + location.pathname;
   }
 })();
 let ytmdUsingBridge = false; // true when the realtime channel is running via the Electron main process instead of an in-page socket
+let ytmdRuntimeConnected = false;
+let ytmdRuntimeStatus = 'offline';
 let ytmdAvailabilityWatchHandle = null;
 let ytmdOfflineMessageShown = false;
 let ytmdAvailabilityCheckInFlight = false;
@@ -1116,7 +1119,7 @@ function updateLeds(){
   const twOn = isTwitchConnected();
   const spOn = !!STATE.settings.spotify.access_token;
   const ytOn = !!STATE.settings.youtube.apiKey;
-  const ytmdOn = isYtmdConnected();
+  const ytmdOn = isYtmdConnected() && ytmdRuntimeConnected;
   setLed('twitch', twOn);   setStatusText('twitch', twOn ? 'Connected' : 'Offline');
   setLed('spotify', spOn);  setStatusText('spotify', spOn ? 'Connected' : 'Not connected');
   setLed('youtube', ytOn);  setStatusText('youtube', ytOn ? 'API key saved' : 'No API key');
@@ -1142,7 +1145,7 @@ function autoRequestModeLabel(mode=getAutoRequestMode()){
 function readinessState(){
   const twitch=isTwitchConnected();
   const spotify=!!STATE.settings.spotify.access_token;
-  const youtube=!!STATE.settings.youtube.apiKey && isYtmdConnected();
+  const youtube=!!STATE.settings.youtube.apiKey && isYtmdConnected() && ytmdRuntimeConnected;
   const autoMode=getAutoRequestMode();
   const playerReady=autoMode==='spotify' ? spotify : autoMode==='youtube' ? youtube : (spotify || youtube);
   const ready=twitch && playerReady;
@@ -1380,11 +1383,12 @@ function renderUpcomingQueue(){
   slot.innerHTML=items.slice(0,12).map((q,i)=>`<div class="queue-item"><div class="who">${i+1}</div><div class="what">${escapeHtml(q.title||'Untitled')} — ${escapeHtml(q.artist||'')}</div><div class="when">${escapeHtml(q.source==='youtube'?'YouTube':'Spotify')}</div></div>`).join('');
 }
 function addUpNext(track, source, user='Aetheris', requested=false){
+  if(track.handoffError) throw new Error(track.handoffError);
   STATE.upNext=STATE.upNext||[];
 
 
   STATE.upNext.push({
-    id:'u'+Date.now()+Math.random().toString(36).slice(2,5),
+    id:track.upNextId || 'u'+Date.now()+Math.random().toString(36).slice(2,5),
     title:track.title||'Untitled',
     artist:track.artist||'',
     source,
@@ -1451,8 +1455,8 @@ function syncUpNextWithNowPlaying(np){
     if(queuedSource!==src) return false;
 
     // Best match: the actual service-native ID.
-    if(src==='spotify' && q.uri && np.uri && q.uri===np.uri) return true;
-    if(src==='youtube' && q.videoId && np.videoId && q.videoId===np.videoId) return true;
+    if(src==='spotify' && q.uri && np.uri) return q.uri===np.uri;
+    if(src==='youtube' && q.videoId && np.videoId) return q.videoId===np.videoId;
 
     // Compatibility for queue entries created before IDs were stored, plus
     // minor metadata differences between YouTube API and YTMD.
@@ -1507,8 +1511,20 @@ function timeAgo(ts){
   return Math.floor(s/3600)+'h ago';
 }
 
-async function queueYoutubeTrack(track){
-  await ytmdEnqueueOrPlay(track);
+async function queueYoutubeTrack(track, request=null){
+  // Each approval needs its own identity, even when two requests resolve to
+  // the same video or a dashboard search result is queued more than once.
+  const queuedTrack = {
+    ...track,
+    upNextId:'u'+Date.now()+Math.random().toString(36).slice(2,8),
+    recoveryRequest:request ? { id:request.id, user:request.user, query:request.query, ts:request.ts } : {
+      id:'r'+Date.now()+Math.random().toString(36).slice(2,8), user:'Aetheris',
+      query:'https://www.youtube.com/watch?v='+track.videoId, ts:Date.now()
+    }
+  };
+  await ytmdEnqueueOrPlay(queuedTrack);
+  if(queuedTrack.handoffError) throw new Error(queuedTrack.handoffError);
+  return queuedTrack;
 }
 
 async function findRequestTrack(query, source){
@@ -1522,15 +1538,27 @@ async function findRequestTrack(query, source){
   return directId ? await youtubeLookupById(directId) : (await youtubeSearch(query))[0] || null;
 }
 
+const pendingRequestResolutions = new Map();
 async function queueResolvedRequest(item, source, quiet=false){
-  const track=await findRequestTrack(item.query, source);
+  if(pendingRequestResolutions.has(item.id)) return pendingRequestResolutions.get(item.id);
+  const pending=queueResolvedRequestOnce(item, source, quiet);
+  pendingRequestResolutions.set(item.id, pending);
+  try{
+    return await pending;
+  }finally{
+    pendingRequestResolutions.delete(item.id);
+  }
+}
+
+async function queueResolvedRequestOnce(item, source, quiet=false){
+  let track=await findRequestTrack(item.query, source);
   if(!track) throw new Error('No '+(source==='spotify'?'Spotify':'YouTube')+' result found');
   claimPlaybackSource(source,'song request queued');
   if(source==='spotify'){
     if(!track.uri) throw new Error('Spotify result is missing a track URI');
     await spotifyQueue(track.uri);
   } else {
-    await queueYoutubeTrack(track);
+    track=await queueYoutubeTrack(track, item);
   }
   addUpNext(track, source, item.user, true);
   STATE.queue = STATE.queue.filter(q=>q.id!==item.id);
@@ -1636,7 +1664,7 @@ async function doManualSearch(){
     resultsEl.querySelectorAll('button[data-i]').forEach(b=>{
       b.addEventListener('click', async ()=>{
         const index = Number(b.dataset.i);
-        const track = results[index];
+        let track = results[index];
         if(!track) return;
 
         // Treat dashboard adds exactly like an approved Aetheris request: run
@@ -1653,7 +1681,7 @@ async function doManualSearch(){
             await spotifyQueue(track.uri);
             toast('Queued: '+track.title);
           }else{
-            await queueYoutubeTrack(track);
+            track=await queueYoutubeTrack(track);
           }
 
           addUpNext(track, src, 'Aetheris');
@@ -1916,7 +1944,7 @@ function renderSettings(){
         <div>
           <h3 style="margin:0;">Twitch</h3>
           <div class="help" id="aetherisbot-cloud-help" style="margin-top:4px;">
-            ${(aetherisBotBridgeStatus.authenticated && aetherisBotBridgeStatus.twitchAuthorizationKnown && !aetherisBotBridgeStatus.twitchAuthorized) ? 'Twitch authorization expired — re-authorize Twitch below.' : aetherisBotBridgeStatus.authenticated ? 'AetherisBot is connected and ready.' : aetherisBotBridgeStatus.paired ? 'Paired — waiting for the cloud bridge.' : 'Connect Twitch to get started.'}
+            ${(aetherisBotBridgeStatus.authenticated && aetherisBotBridgeStatus.twitchAuthorizationKnown && !aetherisBotBridgeStatus.twitchAuthorized) ? 'Twitch authorization expired — re-authorize Twitch below.' : aetherisBotBridgeStatus.authenticated ? aetherisBotReadinessText() : aetherisBotBridgeStatus.paired ? 'Paired — waiting for the cloud bridge.' : 'Connect Twitch to get started.'}
           </div>
         </div>
         <span class="pill ${(aetherisBotBridgeStatus.authenticated && !(aetherisBotBridgeStatus.twitchAuthorizationKnown && !aetherisBotBridgeStatus.twitchAuthorized))?'on':''}" id="aetherisbot-cloud-status">${(aetherisBotBridgeStatus.authenticated && aetherisBotBridgeStatus.twitchAuthorizationKnown && !aetherisBotBridgeStatus.twitchAuthorized)?'reauthorize':aetherisBotBridgeStatus.authenticated?'connected':aetherisBotBridgeStatus.connecting?'connecting…':aetherisBotBridgeStatus.paired?'paired / offline':'not connected'}</span>
@@ -2017,7 +2045,7 @@ function renderSettings(){
           <button class="btn" id="ytmd-connect">${isYtmdConnected() ? 'Reconnect' : 'Connect'}</button>
           <button class="btn ghost" id="ytmd-disconnect">Disconnect</button>
           <button class="btn ghost small" id="ytmd-test">Test connection</button>
-          <span class="pill ${isYtmdConnected()?'on':''}" id="ytmd-status">${isYtmdConnected() ? 'connected' : 'offline'}</span>
+          <span class="pill ${ytmdRuntimeConnected?'on':''}" id="ytmd-status">${escapeHtml(ytmdRuntimeStatus)}</span>
         </div>
         <div class="field" style="margin-top:12px;">
           <label>Connection log <button class="btn ghost small" id="ytmd-log-copy" style="margin-left:8px;padding:2px 8px;font-size:11px;">Copy log</button></label>
@@ -2040,7 +2068,7 @@ function renderSettings(){
     <div class="panel" style="margin-top:14px;">
       <h3>Full setup backup</h3>
       <p class="help">Move Aetheris to a new PC or fresh installation with one file. Credentials are stored in a protected Aetheris blob instead of readable JSON; connection settings, theme, and OBS overlay customization are included. Runtime queues/history are not included.</p>
-      <div class="help" style="margin-top:8px;"><b>Keep this file private:</b> API keys and authorization tokens are stored in readable JSON.</div>
+      <div class="help" style="margin-top:8px;"><b>Keep this file private:</b> Portable backups contain recoverable credentials, even though they are not stored as readable JSON.</div>
       <div class="row" style="margin-top:12px;"><button class="btn" id="full-setup-export">Export all</button><button class="btn ghost" id="full-setup-import">Import all</button></div>
     </div>
   `;
@@ -2907,6 +2935,12 @@ function maybeAnnounceCloudStartup(){
   }, 1500);
 }
 
+function aetherisBotReadinessText(){
+  if(offlineBotTestingEnabled()) return 'AetherisBot is connected. Testing mode allows offline replies.';
+  if(!aetherisBotBridgeStatus.streamStatusKnown) return 'AetherisBot is connected, but replies are muted until Twitch live status is verified.';
+  return aetherisBotBridgeStatus.streamLive ? 'AetherisBot is connected and ready.' : 'AetherisBot is connected. Replies are muted while the channel is offline.';
+}
+
 function applyAetherisBotBridgeStatus(status={}){
   const wasAuthenticated=!!aetherisBotBridgeStatus.authenticated;
   aetherisBotBridgeStatus = { ...aetherisBotBridgeStatus, ...status };
@@ -2944,7 +2978,7 @@ function applyAetherisBotBridgeStatus(status={}){
   }
   const cloudHelp=document.getElementById('aetherisbot-cloud-help');
   if(cloudHelp){
-    cloudHelp.textContent=needsReauth ? 'Twitch authorization expired — use Re-authorize Twitch in Advanced Twitch settings.' : aetherisBotBridgeStatus.authenticated ? 'AetherisBot is connected and ready.' : paired ? 'Paired — waiting for the cloud bridge.' : 'Connect Twitch to get started.';
+    cloudHelp.textContent=needsReauth ? 'Twitch authorization expired — use Re-authorize Twitch in Advanced Twitch settings.' : aetherisBotBridgeStatus.authenticated ? aetherisBotReadinessText() : paired ? 'Paired — waiting for the cloud bridge.' : 'Connect Twitch to get started.';
   }
 
   // Keep the cloud controls in sync when pairing/revocation completes without
@@ -3612,6 +3646,12 @@ async function pollSpotifyNow(){
       saveState();
       maybeAnnounceNowPlaying(STATE.nowPlaying);
       const slot = document.getElementById('np-slot'); if(slot) slot.innerHTML = nowPlayingHtml(STATE.nowPlaying);
+    } else if(!data && STATE.nowPlaying?.source==='spotify' && shouldAcceptPlaybackUpdate('spotify')){
+      // A successful empty response means there is no current Spotify playback.
+      // Do not retain a stale track or clear a different player's current track.
+      STATE.nowPlaying = null;
+      saveState();
+      const slot = document.getElementById('np-slot'); if(slot) slot.innerHTML = nowPlayingHtml(null);
     }
   }catch(e){ /* silent - likely no active playback */ }
 }
@@ -3726,6 +3766,7 @@ function disconnectYtmd(){
   stopYtmdAvailabilityWatch();
   ytmdOfflineMessageShown = false;
   ytmdSelfChange = null;
+  ytmdHandoffTrack = null;
   ytmdShufflePendingTarget = null;
   ytmdPendingQueue = [];
   ytmdNeedsReturnToPlaylist = false;
@@ -3736,6 +3777,8 @@ function disconnectYtmd(){
 }
 
 function setYtmdStatus(text, connected){
+  ytmdRuntimeConnected = !!connected;
+  ytmdRuntimeStatus = String(text);
   const el = document.getElementById('ytmd-status');
   if(el){ el.textContent = text; el.classList.toggle('on', !!connected); }
 }
@@ -3907,7 +3950,7 @@ function scheduleEarlySwap(){
   // REST-only fallback: preserve the old prediction path. It is less seek-
   // aware, but avoids hammering the Companion Server's rate-limited /state.
   const np = STATE.nowPlaying;
-  if(!np || !np.durationMs || !np.updatedAt) return;
+  if(!np || !np.durationMs || !np.updatedAt || !np.isPlaying) return;
   const elapsedSinceUpdate = np.isPlaying ? (Date.now() - np.updatedAt) : 0;
   const estimatedProgress = np.progressMs + elapsedSinceUpdate;
   const fireIn = (np.durationMs - estimatedProgress) - 500;
@@ -3922,10 +3965,35 @@ function scheduleEarlySwap(){
 }
 
 function performEarlySwap(){
+  if(ytmdSelfChange) return;
   if(ytmdPendingQueue.length>0){
+    const heldQueue = ytmdPendingQueue;
     const next = ytmdPendingQueue.shift();
+    ytmdHandoffTrack = next;
     ytmdSelfChange = next.videoId;
-    ytmdChangeVideo(next.videoId).catch(()=>{ ytmdSelfChange=null; });
+    ytmdChangeVideo(next.videoId).then(()=>{
+      if(ytmdHandoffTrack===next) ytmdHandoffTrack=null;
+    }).catch(error=>{
+      // Explicit disconnect replaces the held queue. Never resurrect a
+      // canceled session or retry a track already confirmed by realtime.
+      if(heldQueue!==ytmdPendingQueue || next.handoffConfirmed) return;
+      next.handoffError='YouTube handoff failed; request returned to Pending for manual retry.';
+      if(ytmdSelfChange===next.videoId) ytmdSelfChange=null;
+      if(ytmdHandoffTrack===next) ytmdHandoffTrack=null;
+      const queued=(STATE.upNext||[]).find(q=>next.upNextId ? q.id===next.upNextId : q.source==='youtube' && q.videoId===next.videoId);
+      const request=next.recoveryRequest || {
+        id:'r'+Date.now()+Math.random().toString(36).slice(2,8),
+        user:queued?.user || 'Aetheris', query:'https://www.youtube.com/watch?v='+next.videoId, ts:Date.now()
+      };
+      STATE.queue=STATE.queue||[];
+      if(!STATE.queue.some(q=>q.id===request.id)) STATE.queue.push(request);
+      if(queued) STATE.upNext=STATE.upNext.filter(q=>q.id!==queued.id);
+      saveState();
+      renderQueue();
+      renderUpcomingQueue();
+      logYtmd(next.handoffError+' '+(error?.message||String(error)));
+      toast(next.handoffError);
+    });
     return;
   }
   if(ytmdNeedsReturnToPlaylist) ytmdReturnToPlaylist();
@@ -3971,8 +4039,7 @@ async function ytmdReturnToPlaylist(){
 // approval time and hold the track until the current song actually ends.
 async function ytmdEnqueueOrPlay(track){
   if(!isYtmdConnected()){
-    toast('Connect YouTube Music Desktop in Settings to play YouTube requests.');
-    return;
+    throw new Error('Connect YouTube Music Desktop in Settings to play YouTube requests.');
   }
   try{
     // Avoid an extra /state call when the regular poll (every 6s) already
@@ -4000,14 +4067,25 @@ async function ytmdEnqueueOrPlay(track){
       if(!ytmdOriginalPlaylistId && isStableReturnPlaylistId(playlistId)){
         ytmdOriginalPlaylistId = playlistId;
       }
+      const previousNeedsReturn = ytmdNeedsReturnToPlaylist;
+      const previousSelfChange = ytmdSelfChange;
       ytmdNeedsReturnToPlaylist = true;
       ytmdSelfChange = track.videoId;
-      await ytmdChangeVideo(track.videoId);
+      try{
+        await ytmdChangeVideo(track.videoId);
+      }catch(e){
+        if(ytmdSelfChange===track.videoId){
+          ytmdSelfChange=previousSelfChange;
+          ytmdNeedsReturnToPlaylist=previousNeedsReturn;
+        }
+        throw e;
+      }
       toast('Playing now on YouTube Music Desktop.');
     }
   }catch(e){
     logYtmd('Could not queue on YTM Desktop: '+e.message);
     toast('Could not reach YouTube Music Desktop.');
+    throw e;
   }
 }
 
@@ -4144,6 +4222,10 @@ function applyYtmdState(state){
   }
 
   if(isSelfChange){
+    if(ytmdHandoffTrack?.videoId===v.id){
+      ytmdHandoffTrack.handoffConfirmed=true;
+      ytmdHandoffTrack=null;
+    }
     const completedChange = ytmdSelfChange;
     ytmdSelfChange = null;
     ytmdLastVideoId = v.id;
@@ -4196,6 +4278,8 @@ if(window.aetherisBridge){
   window.aetherisBridge.onConnectError(async(detail)=>{
     if(ytmdBridgeErrorCheckInFlight) return;
     ytmdBridgeErrorCheckInFlight = true;
+    setYtmdStatus('reconnecting…', false);
+    updateLeds();
     try{
       if(!(await isYtmdServerReachable())){
         enterYtmdOfflineWait();
@@ -4220,6 +4304,8 @@ if(window.aetherisBridge){
     // A manual stop/offline transition also emits disconnect; don't turn that
     // into another visible error. Only report it if the server is still alive.
     if(!isYtmdConnected()) return;
+    setYtmdStatus('reconnecting…', false);
+    updateLeds();
     if(!(await isYtmdServerReachable())){
       enterYtmdOfflineWait();
       return;
@@ -4286,6 +4372,8 @@ async function startYtmdRealtime(){
   socket.on('connect_error', async(err)=>{
     if(ytmdRealtimeErrorCheckInFlight) return;
     ytmdRealtimeErrorCheckInFlight = true;
+    setYtmdStatus('reconnecting…', false);
+    updateLeds();
     try{
       if(!(await isYtmdServerReachable())){
         enterYtmdOfflineWait();
@@ -4310,6 +4398,8 @@ async function startYtmdRealtime(){
   });
   socket.on('disconnect', async(reason)=>{
     if(!isYtmdConnected()) return;
+    setYtmdStatus('reconnecting…', false);
+    updateLeds();
     if(!(await isYtmdServerReachable())){
       enterYtmdOfflineWait();
       return;
@@ -4336,6 +4426,8 @@ async function pollYtmdState(){
   if(Date.now() < ytmdPollBackoffUntil) return;
   try{
     const state = await ytmdApi('/state');
+    setYtmdStatus('connected', true);
+    updateLeds();
     applyYtmdState(state);
   }catch(e){
     const m = /retry in (\d+)/i.exec(e.message);
