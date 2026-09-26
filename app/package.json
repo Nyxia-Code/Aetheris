@@ -1,7 +1,7 @@
 {
   "name": "aetheris",
-  "version": "1.4.5",
-  "description": "Aetheris \u2014 Twitch song-request control panel with OBS overlay",
+  "version": "1.4.6",
+  "description": "Aetheris — Twitch song-request control panel with OBS overlay",
   "main": "main.js",
   "author": "",
   "license": "UNLICENSED",

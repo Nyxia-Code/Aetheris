@@ -4451,6 +4451,18 @@ applyTheme();
 // in-app "What's new" panel. Sorted newest-first automatically below, so
 // entries can be added in any order.
 const CHANGELOG = [
+  { version:'1.4.6', title:'Commands, requests & playback reliability', notes:[
+    'Restored Twitch command replies through AetherisBot, including !song, !sr, and !queue, by correcting cloud stream-status handling and command reply readiness.',
+    'Improved AetherisBot cloud reliability with safer connection handling, shared concurrent connection attempts, malformed-message validation, and WebSocket keepalive behavior to reduce idle disconnects.',
+    'Fixed rapid duplicate request approvals so the same request cannot be enqueued twice while an approval is still processing.',
+    'Improved Up Next matching so Spotify and YouTube native track IDs take priority over fuzzy title/artist matching when both IDs are available.',
+    'Fixed failed immediate YTMD request handoffs being incorrectly marked complete; failed requests now remain pending and can be retried.',
+    'Fixed YTMD connection indicators treating saved credentials as an active connection, and prevented paused REST fallback playback from scheduling an end-of-track request switch.',
+    'Fixed successful empty Spotify playback responses leaving stale Now Playing information on screen.',
+    'Fixed OBS overlay progress visibility and idle-state rendering, and improved Now Playing timing synchronization without restarting vinyl or marquee animations during routine progress updates.',
+    'Improved hot-patch rollback so a failed activation restores the previous working runtime instead of leaving a partially applied patch.',
+    'Updated Full Setup Backup warnings to accurately explain that exported setup files contain recoverable credentials and should be kept private.'
+  ]},
   { version:'1.4.5', title:'Standalone OBS overlay engine & reliability', notes:[
     'Rebuilt the OBS Now Playing overlay as a dedicated standalone page instead of loading the full Aetheris application renderer inside OBS.',
     'Added a direct current-state endpoint so a newly loaded or reconnected Browser Source can immediately recover the latest playback state.',
