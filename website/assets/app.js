@@ -28,7 +28,9 @@ document.querySelectorAll(".copy-code").forEach(btn=>btn.addEventListener("click
   });
 
   const reduced=matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const reveal=[...document.querySelectorAll("main section > *, .card, .feature-card")].filter(el=>!el.closest(".hash-guide .step"));
+  // Async release containers can exceed the observer threshold's visible area.
+  // Keep both the timeline and its safety archive visible without reveal timing.
+  const reveal=[...document.querySelectorAll("main section > *, .card, .feature-card")].filter(el=>!el.closest(".hash-guide .step")&&!['release-timeline','release-archive'].includes(el.id));
   reveal.forEach(el=>el.classList.add("reveal"));
   if(reduced || !("IntersectionObserver" in window)){
     reveal.forEach(el=>el.classList.add("is-visible"));
@@ -222,7 +224,13 @@ document.querySelectorAll(".copy-code").forEach(btn=>btn.addEventListener("click
       const notes=element('div',undefined,'release-notes');renderNotes(notes,r.body);
       const link=element('a','View Release on GitHub ↗');link.href=r.html_url;link.target='_blank';link.rel='noopener noreferrer';notes.append(link);article.append(meta,notes);fragment.append(article);
     }
+    // Build off-DOM first. Never retire the archive on a fetch result alone.
+    if(!fragment.childElementCount||fragment.childElementCount!==seen.size)throw Error('No complete release cards were built');
     timeline.replaceChildren(fragment);
+    const first=timeline.firstElementChild;
+    if(!first?.isConnected||first.parentElement!==timeline||!first.querySelector('h2')||!first.querySelector('a')||!first.getClientRects().length||getComputedStyle(timeline).opacity==='0'){
+      throw Error('Release cards could not be displayed');
+    }
     for(const entry of document.querySelectorAll('[data-static-release]'))entry.hidden=seen.has(normalize(entry.dataset.staticRelease));
     text('release-archive-heading','Historical archive — releases not included above');
   }
@@ -238,14 +246,17 @@ document.querySelectorAll(".copy-code").forEach(btn=>btn.addEventListener("click
       const historyResult=timeline?load('list').then(value=>({value}),error=>({error})):Promise.resolve(null);
       const [latest,history]=await Promise.all([currentResult,historyResult]);
       if(timeline){
-        if(history.error){
-          timeline.replaceChildren();for(const entry of document.querySelectorAll('[data-static-release]'))entry.hidden=false;
-          text('release-archive-heading','Historical archive — not a current release listing');
-          status.dataset.state='error';status.textContent='GitHub releases unavailable. Showing preserved historical notes; this is not the latest release list. '+history.error.message;
-        }else{
+        try{
+          if(history.error)throw history.error;
           renderHistory(history.value,latest);
           const stale=history.value.stale||!latest||latest.stale;
           status.dataset.state=stale?'stale':'ok';status.textContent=stale?'Showing release history checked '+new Date(history.value.at).toLocaleString()+'. Current latest could not be verified; no LATEST badge is shown.':'Stable GitHub releases. Checked '+new Date(history.value.at).toLocaleString()+'.';
+        }catch(error){
+          // Also recover from construction/commit errors, including a partial commit.
+          for(const entry of document.querySelectorAll('[data-static-release]'))entry.hidden=false;
+          timeline.textContent='';
+          text('release-archive-heading','Historical archive — not a current release listing');
+          status.dataset.state='error';status.textContent='GitHub releases could not be displayed. Showing preserved historical notes; this is not the latest release list. '+error.message;
         }
         if(retry)retry.hidden=status.dataset.state==='ok';
       }
