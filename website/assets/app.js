@@ -1,5 +1,5 @@
 document.getElementById("year").textContent = new Date().getFullYear();
-const apiStatus=document.getElementById("api-status");if(apiStatus){fetch("https://api.aetherisbot.club/health",{cache:"no-store"}).then(r=>{if(!r.ok)throw new Error();return r.json()}).then(d=>{if(d&&d.ok){apiStatus.textContent="OPERATIONAL";apiStatus.className="status ok"}else throw new Error()}).catch(()=>{apiStatus.textContent="UNREACHABLE";apiStatus.className="status bad"});}
+const apiStatus=document.getElementById("api-status");if(apiStatus){fetch("https://api.aetherisbot.com/health",{cache:"no-store"}).then(r=>{if(!r.ok)throw new Error();return r.json()}).then(d=>{if(d&&d.ok){apiStatus.textContent="OPERATIONAL";apiStatus.className="status ok"}else throw new Error()}).catch(()=>{apiStatus.textContent="UNREACHABLE";apiStatus.className="status bad"});}
 // Docs table-of-contents scroll highlight
 const docsToc=document.getElementById("docs-toc");
 if(docsToc){
