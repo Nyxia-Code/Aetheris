@@ -14,15 +14,17 @@ if(docsToc){
   addEventListener("scroll",setActive,{passive:true}); setActive();
 }
 document.querySelectorAll(".copy-code").forEach(btn=>btn.addEventListener("click",async()=>{
+  if(btn.disabled||!btn.dataset.copy)return;
   try{await navigator.clipboard.writeText(btn.dataset.copy);btn.textContent="Copied";setTimeout(()=>btn.textContent="Copy",1400)}catch{}
 }));
 
 // v1.0 production polish
 (()=>{
-  const page=(location.pathname.split("/").pop()||"index.html").toLowerCase();
+  const route=value=>(value.split("/").filter(Boolean).pop()||"index").toLowerCase().replace(/\.html$/, "");
+  const page=route(location.pathname);
   document.querySelectorAll(".nav a[href]").forEach(a=>{
     const href=(a.getAttribute("href")||"").split("#")[0].toLowerCase();
-    if(href && href===page) a.classList.add("active");
+    if(href && route(href)===page) a.classList.add("active");
   });
 
   const reduced=matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -68,103 +70,187 @@ document.querySelectorAll(".copy-code").forEach(btn=>btn.addEventListener("click
 })();
 
 
-// Keep public release information synced to GitHub. There is intentionally NO
-// static version/checksum fallback: a sync failure must be visible instead of
-// silently showing stale release information.
+// Shared GitHub release client for current labels, downloads and the changelog.
+// Public data only. Cached notes are never treated as HTML or executable content.
 (()=>{
-  const versionEls=[...document.querySelectorAll("[data-release-version], #latest-version, #verify-version, #hash-match-version")];
-  const installerLink=document.getElementById("latest-installer");
-  if(!versionEls.length&&!installerLink)return;
-  const releasePage=document.getElementById("latest-release-page");
-  const installerHash=document.getElementById("installer-hash");
-  const installerHashRow=document.getElementById("installer-hash-row");
-  const installedExeRow=document.getElementById("installed-exe-hash-row");
-  const installerVt=document.getElementById("installer-vt");
-  const installedExeVt=document.getElementById("installed-exe-vt");
-  const note=document.getElementById("release-sync-note");
-  const filenameEl=document.getElementById("installer-filename");
-  const hashCommand=document.getElementById("hash-command");
-  const hashCopy=document.getElementById("hash-copy");
-
-  const setVersions=text=>versionEls.forEach(el=>el.textContent=text);
-  const showNote=(text,isError=false)=>{
-    if(!note)return;
-    note.hidden=false;
-    note.textContent=text;
-    note.dataset.syncError=isError?"true":"false";
+  const API='https://api.github.com/repos/Nyxia-Code/Aetheris/releases';
+  const RELEASES='https://github.com/Nyxia-Code/Aetheris/releases';
+  const CACHE='aetheris.github-releases.v2', TTL=5*60*1000, MAX_STALE=7*24*60*60*1000;
+  const versions=[...document.querySelectorAll('[data-release-version]')];
+  const shipped=document.querySelector('[data-release-shipped]');
+  const timeline=document.getElementById('release-timeline');
+  const installerLink=document.getElementById('latest-installer');
+  if(!versions.length&&!shipped&&!timeline&&!installerLink)return;
+  const byId=id=>document.getElementById(id);
+  const normalize=tag=>/^v?(\d+\.\d+\.\d+)$/i.exec(String(tag))?.[1]||null;
+  const safeUrl=(value,prefix)=>{
+    try{const u=new URL(value);return u.protocol==='https:'&&!u.username&&!u.password&&u.origin==='https://github.com'&&u.pathname.startsWith(prefix)?u.href:null}catch{return null}
   };
-
-  fetch("https://api.github.com/repos/Nyxia-Code/Aetheris/releases/latest",{
-    headers:{Accept:"application/vnd.github+json"},cache:"no-store"
-  })
-    .then(async r=>{
-      if(!r.ok){
-        const remaining=r.headers.get("x-ratelimit-remaining");
-        throw new Error(`GitHub API returned HTTP ${r.status}${remaining!==null?` (rate-limit remaining: ${remaining})`:""}`);
-      }
-      return r.json();
-    })
-    .then(release=>{
-      const assets=Array.isArray(release.assets)?release.assets:[];
-      const installer=assets.find(a=>/aetheris.*setup.*\.exe$/i.test(a.name||"")) || assets.find(a=>/\.exe$/i.test(a.name||""));
-      const tagMatch=String(release.tag_name||"").match(/(\d+\.\d+\.\d+)/);
-      if(!tagMatch)throw new Error(`Latest GitHub release has an unreadable tag: ${release.tag_name||"(missing)"}`);
-      const version=`v${tagMatch[1]}`;
-      setVersions(version);
-
-      if(releasePage&&release.html_url)releasePage.href=release.html_url;
-      if(installerLink){
-        if(installer&&installer.browser_download_url){
-          installerLink.href=installer.browser_download_url;
-          installerLink.textContent=`Download ${version} installer ↗`;
-        }else if(release.html_url){
-          installerLink.href=release.html_url;
-          installerLink.textContent=`Open ${version} release ↗`;
+  function validateRelease(r){
+    if(!r||r.draft!==false||r.prerelease!==false||typeof r.tag_name!=='string'||r.tag_name.length>128)return null;
+    const version=normalize(r.tag_name),url=safeUrl(r.html_url,'/Nyxia-Code/Aetheris/releases/tag/');
+    if(!version||!url||typeof r.published_at!=='string'||!Number.isFinite(Date.parse(r.published_at)))return null;
+    return {tag_name:r.tag_name,version,html_url:url,name:String(r.name||r.tag_name).slice(0,300),
+      published_at:new Date(r.published_at).toISOString(),body:String(r.body||'').slice(0,32768),
+      draft:false,prerelease:false,assets:(Array.isArray(r.assets)?r.assets:[]).slice(0,100).flatMap(a=>{
+        if(!a||typeof a.name!=='string'||!/^[a-z0-9][a-z0-9._ ()-]{0,179}$/i.test(a.name))return [];
+        const download=safeUrl(a.browser_download_url,'/Nyxia-Code/Aetheris/releases/download/');
+        if(!download)return [];
+        return [{name:a.name,browser_download_url:download,digest:typeof a.digest==='string'&&/^sha256:[a-f0-9]{64}$/i.test(a.digest)?a.digest:null}];
+      })};
+  }
+  function stableList(rows){
+    if(!Array.isArray(rows)||rows.length>500)throw Error('Invalid release listing');
+    const unique=new Map();
+    for(const r of rows.map(validateRelease).filter(Boolean).sort((a,b)=>b.published_at.localeCompare(a.published_at)||a.tag_name.localeCompare(b.tag_name))){
+      if(!unique.has(r.version))unique.set(r.version,r);
+    }
+    if(!unique.size)throw Error('No published stable releases returned');
+    return [...unique.values()];
+  }
+  let cache={};
+  try{const raw=localStorage.getItem(CACHE);if(raw&&raw.length<2*1024*1024){const parsed=JSON.parse(raw);if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))cache=parsed}}catch{}
+  const pending=new Map();
+  function cached(key){
+    try{const c=cache[key],age=Date.now()-c.at;if(!Number.isFinite(c.at)||age<0||age>MAX_STALE)return null;
+      const data=key==='latest'?validateRelease(c.data):stableList(c.data);return data?{data,at:c.at,age}:null;
+    }catch{return null}
+  }
+  function persist(key,data){
+    cache[key]={at:Date.now(),data};try{localStorage.setItem(CACHE,JSON.stringify(cache))}catch{}
+  }
+  let blockedUntil=0;
+  async function request(url){
+    if(Date.now()<blockedUntil)throw Error('GitHub rate limit: retry after '+new Date(blockedUntil).toLocaleTimeString());
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),8000);
+    try{
+      const response=await fetch(url,{headers:{Accept:'application/vnd.github+json'},signal:controller.signal});
+      if(!response.ok){
+        if(response.status===429||response.status===403){
+          const retry=response.headers.get('retry-after'),reset=Number(response.headers.get('x-ratelimit-reset'))*1000;
+          const retryAt=retry?(Number.isFinite(Number(retry))?Date.now()+Number(retry)*1000:Date.parse(retry)):0;
+          blockedUntil=Math.max(Date.now()+60000,Math.min(Math.max(retryAt||0,reset||0),Date.now()+24*60*60*1000));
         }
+        throw Error('GitHub API returned HTTP '+response.status);
       }
-      if(installer){
-        if(filenameEl)filenameEl.textContent=installer.name;
-        const cmd=`Get-FileHash ".\\${installer.name}" -Algorithm SHA256`;
-        if(hashCommand)hashCommand.textContent=cmd;
-        if(hashCopy)hashCopy.dataset.copy=cmd;
+      // Bound both streamed bytes and parse size; timeout covers body reading too.
+      const reader=response.body.getReader(),parts=[];let size=0;
+      while(true){const {done,value}=await reader.read();if(done)break;size+=value.byteLength;if(size>1024*1024){await reader.cancel();throw Error('GitHub response exceeded size limit')}parts.push(value)}
+      const bytes=new Uint8Array(size);let offset=0;for(const part of parts){bytes.set(part,offset);offset+=part.byteLength}
+      return {data:JSON.parse(new TextDecoder().decode(bytes)),link:response.headers.get('link')};
+    }finally{clearTimeout(timer)}
+  }
+  async function load(key){
+    const old=cached(key);if(old&&old.age<TTL)return {...old,source:'cache',stale:false};
+    if(pending.has(key))return pending.get(key);
+    const promise=(async()=>{
+      try{
+        let data;
+        if(key==='latest'){
+          data=validateRelease((await request(API+'/latest')).data);if(!data)throw Error('Invalid latest stable release');
+        }else{
+          let url=API+'?per_page=100',rows=[];const visited=new Set();
+          while(url){
+            if(visited.has(url)||visited.size>=5)throw Error('Release pagination limit reached');visited.add(url);
+            const response=await request(url);if(!Array.isArray(response.data))throw Error('Invalid release listing');
+            rows.push(...response.data);
+            const next=response.link?.match(/<([^>]+)>\s*;\s*rel="next"/)?.[1];url=null;
+            if(next){const u=new URL(next);if(u.origin!=='https://api.github.com'||u.pathname!=='/repos/Nyxia-Code/Aetheris/releases'||u.username||u.password)throw Error('Unexpected pagination URL');url=u.href}
+          }
+          data=stableList(rows);
+        }
+        persist(key,data);return {data,at:cache[key].at,source:'network',stale:false};
+      }catch(error){if(old)return {...old,source:'cache',stale:true,error};throw error}
+    })();
+    pending.set(key,promise);try{return await promise}finally{pending.delete(key)}
+  }
+  const text=(id,value)=>{const el=byId(id);if(el)el.textContent=value};
+  const note=(value,error=false)=>{const el=byId('release-sync-note');if(el){el.hidden=false;el.textContent=value;el.dataset.syncError=String(error)}};
+  function unavailable(){
+    versions.forEach(el=>el.textContent='Release unavailable');if(shipped)shipped.textContent='Release unavailable';
+    text('installer-filename','Release metadata unavailable');text('hash-command','Checksum command unavailable until release metadata loads.');
+    const copy=byId('hash-copy');if(copy){copy.disabled=true;delete copy.dataset.copy}
+    for(const id of ['installer-vt','installed-exe-vt']){const el=byId(id);if(el){el.hidden=true;el.removeAttribute('href')}}
+    if(installerLink){installerLink.href=RELEASES+'/latest';installerLink.textContent='View latest release on GitHub ↗'}
+    text('installer-hash','Current checksum unavailable');
+    const exe=byId('installed-exe-hash-row')?.querySelector('code');if(exe)exe.textContent='Current checksum unavailable';
+  }
+  function renderCurrent(result){
+    if(result.stale)throw Error('Cached release metadata is stale; current checksums were not verified.');
+    const r=result.data,version='v'+r.version;
+    versions.forEach(el=>el.textContent=version);if(shipped)shipped.textContent=version+' shipped';
+    const releasePage=byId('latest-release-page');if(releasePage)releasePage.href=r.html_url;
+    const installer=r.assets.find(a=>/aetheris.*setup.*\.exe$/i.test(a.name))||r.assets.find(a=>/\.exe$/i.test(a.name));
+    if(installerLink){installerLink.href=installer?.browser_download_url||r.html_url;installerLink.textContent=installer?'Download '+version+' installer ↗':'View '+version+' release on GitHub ↗'}
+    if(installer){
+      text('installer-filename',installer.name);
+      // Validated filename plus single-quoted PowerShell literal prevents substitution.
+      const command="Get-FileHash -LiteralPath '.\\"+installer.name+"' -Algorithm SHA256";
+      text('hash-command',command);const copy=byId('hash-copy');if(copy){copy.dataset.copy=command;copy.disabled=false}
+    }
+    const digest=installer?.digest?.slice(7).toUpperCase()||'';
+    text('installer-hash',digest||'Not published by GitHub for this installer');
+    const exeMatch=r.body.match(/Installed\s+(?:EXE(?:\s+SHA-?256)?|Aetheris\.exe|Application)[\s\S]{0,300}?\b([a-f0-9]{64})\b/i);
+    const exeDigest=exeMatch?exeMatch[1].toUpperCase():'';
+    const exe=byId('installed-exe-hash-row')?.querySelector('code');if(exe)exe.textContent=exeDigest||'Not found in GitHub release notes';
+    for(const [id,d] of [['installer-vt',digest],['installed-exe-vt',exeDigest]]){const el=byId(id);if(el){el.hidden=!d;if(d)el.href='https://www.virustotal.com/gui/file/'+d}}
+    note('GitHub release metadata — '+version+'. Checked '+new Date(result.at).toLocaleString()+(result.source==='cache'?' (five-minute cache).':'.'));
+  }
+  function element(tag,value,className){const el=document.createElement(tag);if(value!==undefined)el.textContent=value;if(className)el.className=className;return el}
+  // Deliberately small Markdown subset. Raw HTML, inline Markdown and links stay text.
+  function renderNotes(parent,body){
+    let list=null,kind=null,code=null,paragraph=null;
+    for(const line of (body||'No release notes provided.').split(/\r?\n/).slice(0,1200)){
+      if(/^\s*```/.test(line)){list=paragraph=null;kind=null;if(code){code=null}else{const pre=element('pre');code=element('code','');pre.append(code);parent.append(pre)}continue}
+      if(code){code.textContent+=line+'\n';continue}
+      if(!line.trim()){list=paragraph=null;kind=null;continue}
+      const heading=/^#{1,6}\s+(.+)$/.exec(line),bullet=/^\s*(?:[-*+]\s+|\d+[.)]\s+)(.*)$/.exec(line);
+      if(heading){parent.append(element('h3',heading[1]));list=paragraph=null;kind=null}
+      else if(bullet){const nextKind=/^\s*\d/.test(line)?'ol':'ul';if(!list||nextKind!==kind){list=element(nextKind);parent.append(list);kind=nextKind}list.append(element('li',bullet[1]));paragraph=null}
+      else{list=null;kind=null;if(!paragraph){paragraph=element('p',line);parent.append(paragraph)}else paragraph.textContent+='\n'+line}
+    }
+  }
+  function renderHistory(result,latest){
+    const fragment=document.createDocumentFragment(),seen=new Set();
+    const rows=stableList(latest&&!latest.stale?[latest.data,...result.data]:result.data);
+    const latestVersion=latest&&!latest.stale&&!result.stale?latest.data.version:null;
+    for(const r of rows){
+      seen.add(r.version);const article=element('article',undefined,'release glass');article.dataset.releaseVersion=r.version;
+      const meta=element('div');if(r.version===latestVersion)meta.append(element('span','LATEST'));
+      meta.append(element('h2','v'+r.version),element('small',r.name),element('small','Tag: '+r.tag_name,'release-tag'));
+      const date=element('time',r.published_at.slice(0,10)+' UTC');date.dateTime=r.published_at;meta.append(date);
+      const notes=element('div',undefined,'release-notes');renderNotes(notes,r.body);
+      const link=element('a','View Release on GitHub ↗');link.href=r.html_url;link.target='_blank';link.rel='noopener noreferrer';notes.append(link);article.append(meta,notes);fragment.append(article);
+    }
+    timeline.replaceChildren(fragment);
+    for(const entry of document.querySelectorAll('[data-static-release]'))entry.hidden=seen.has(normalize(entry.dataset.staticRelease));
+    text('release-archive-heading','Historical archive — releases not included above');
+  }
+  const status=byId('changelog-status'),retry=byId('changelog-retry');let running=false;
+  async function refresh(){
+    if(running)return;running=true;if(retry){retry.hidden=true;retry.disabled=true}
+    if(status){status.dataset.state='loading';status.textContent='Loading GitHub releases. Historical notes remain available below.'}
+    unavailable();
+    try{
+      const currentPromise=load('latest');
+      // Download/current-label updates never wait for the changelog list.
+      const currentResult=currentPromise.then(value=>{try{renderCurrent(value)}catch(error){unavailable();note(error.message,true)}return value},error=>{unavailable();note('GitHub release sync failed: '+error.message,true);return null});
+      const historyResult=timeline?load('list').then(value=>({value}),error=>({error})):Promise.resolve(null);
+      const [latest,history]=await Promise.all([currentResult,historyResult]);
+      if(timeline){
+        if(history.error){
+          timeline.replaceChildren();for(const entry of document.querySelectorAll('[data-static-release]'))entry.hidden=false;
+          text('release-archive-heading','Historical archive — not a current release listing');
+          status.dataset.state='error';status.textContent='GitHub releases unavailable. Showing preserved historical notes; this is not the latest release list. '+history.error.message;
+        }else{
+          renderHistory(history.value,latest);
+          const stale=history.value.stale||!latest||latest.stale;
+          status.dataset.state=stale?'stale':'ok';status.textContent=stale?'Showing release history checked '+new Date(history.value.at).toLocaleString()+'. Current latest could not be verified; no LATEST badge is shown.':'Stable GitHub releases. Checked '+new Date(history.value.at).toLocaleString()+'.';
+        }
+        if(retry)retry.hidden=status.dataset.state==='ok';
       }
-
-      const digest=installer&&typeof installer.digest==="string"&&installer.digest.toLowerCase().startsWith("sha256:")
-        ? installer.digest.slice(7).toUpperCase():"";
-      if(installerHash)installerHash.textContent=digest||"Not published by GitHub for this installer";
-      if(installerHashRow)installerHashRow.hidden=false;
-      if(installerVt){
-        installerVt.hidden=!digest;
-        if(digest)installerVt.href=`https://www.virustotal.com/gui/file/${digest}`;
-      }
-
-      const body=String(release.body||"");
-      const exeMatch=body.match(/Installed\s+EXE(?:\s+SHA-?256)?[\s\S]{0,160}?\b([A-Fa-f0-9]{64})\b/i);
-      const exeDigest=exeMatch?exeMatch[1].toUpperCase():"";
-      if(installedExeRow){
-        installedExeRow.hidden=false;
-        const code=installedExeRow.querySelector("code");
-        if(code)code.textContent=exeDigest||"Not found in GitHub release notes";
-      }
-      if(installedExeVt){
-        installedExeVt.hidden=!exeDigest;
-        if(exeDigest)installedExeVt.href=`https://www.virustotal.com/gui/file/${exeDigest}`;
-      }
-      showNote(`Live GitHub sync OK — ${version} (${release.tag_name}).`);
-      console.info("[Aetheris release sync]",{version,tag:release.tag_name,installer:installer&&installer.name,installerDigest:!!digest,installedExeDigest:!!exeDigest});
-    })
-    .catch(err=>{
-      setVersions("SYNC FAILED");
-      if(installerHash)installerHash.textContent="Release sync failed";
-      if(installedExeRow){
-        installedExeRow.hidden=false;
-        const code=installedExeRow.querySelector("code");
-        if(code)code.textContent="Release sync failed";
-      }
-      if(installerVt)installerVt.hidden=true;
-      if(installedExeVt)installedExeVt.hidden=true;
-      showNote(`GitHub release sync failed: ${err.message}`,true);
-      console.error("[Aetheris release sync]",err);
-    });
+    }finally{running=false;if(retry)retry.disabled=false}
+  }
+  retry?.addEventListener('click',()=>{void refresh()});
+  void refresh();
 })();
-
